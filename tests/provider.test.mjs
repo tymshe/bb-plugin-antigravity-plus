@@ -32,7 +32,8 @@ test('registers a native ACP provider without changing credentials or bypassing 
   assert.equal(provider.id, 'antigravity-plus');
   assert.equal(provider.displayName, 'Antigravity Provider +');
   assert.equal(provider.icon, './assets/provider.svg');
-  assert.deepEqual(provider.composerActions, []);
+  assert.deepEqual(provider.composerActions, ['plan']);
+  assert.equal(provider.capabilities.supportsNativeUserQuestion, true);
   const spec = experimental_acpLaunchSpecSchema.parse(provider.experimental_bridgeOptions.acpLaunchSpec);
   assert.equal(spec.command, 'agy');
   assert.deepEqual(spec.args, ['acp', '--disable-telemetry']);

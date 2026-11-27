@@ -22,12 +22,10 @@ test('BB Auto reaches the bridge as Accept edits with user review and native agy
   }
 });
 
-test('Plan wins over native auto and other permission modes are untouched', () => {
-  for (const planned of [{ promptMode: 'plan' }, { sessionOptions: { mode: 'plan' } }]) {
-    const options = JSON.parse(mapPromptMode(JSON.stringify({ method: 'turn/start', params: { options: { ...auto, ...planned } } }))).params.options;
-    assert.equal(options.sessionOptions.mode, 'plan');
-    assert.equal(options.permissionMode, 'accept-edits');
-  }
+test('The /plan action wins over native auto and other permission modes are untouched', () => {
+  const planned = JSON.parse(mapPromptMode(JSON.stringify({ method: 'turn/start', params: { options: { ...auto, promptMode: 'plan' } } }))).params.options;
+  assert.equal(planned.sessionOptions.mode, 'plan');
+  assert.equal(planned.permissionMode, 'accept-edits');
   const full = JSON.stringify({ method: 'thread/start', params: { options: { permissionMode: 'full', permissionScope: 'full', approvalReviewer: null, permissionEscalation: null } } });
   assert.equal(mapPromptMode(full), full);
 });

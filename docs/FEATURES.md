@@ -13,7 +13,7 @@ Verified against Antigravity CLI 1.5.16 on macOS (BB Desktop), 1.5.14 on Linux, 
 | Command & tool presentation | Displays `toolSummary` descriptions (`commandDescriptionsEnabled`), clean command output and exit codes, destructive **Outside of sandbox** badges (`BypassSandbox`), and native delegation cards |
 | Sandbox-escape guard | `acceptEditsApproval` setting (`ask` default, `auto-in-sandbox`, or `auto-all`) lets you auto-approve routine in-sandbox requests in Accept edits mode while still prompting for **Outside of sandbox** commands |
 | Model catalog and reasoning | Host-scoped model cache (`models.scope: "host"`); supports `low`, `medium`, `high`, `xhigh`, and `max` depending on model and account |
-| Plan/Build | One Mode selector mapped to native Plan/Accept edits with provider-specific `planModeCopy` and no duplicate Plan action |
+| Plan | BB's `/plan` composer action (`--plan` on `bb thread spawn`) selects native Plan with provider-specific `planModeCopy`; agy's raw mode select is hidden because BB's permission picker and `/plan` cover it |
 | Accept edits / Full access | Shared bridge permission policy |
 | Per-session worker isolation | Always passes `--process-per-session` to `agy acp` so each thread runs in its own CLI worker process |
 | CLI terminal sandbox | Inherits CLI settings; optional `sandbox` flag adds `--sandbox` for new threads |
@@ -24,8 +24,8 @@ Verified against Antigravity CLI 1.5.16 on macOS (BB Desktop), 1.5.14 on Linux, 
 | Manual and automatic compaction | Manual `/compact` (`agy 1.5.14+`) with failure detection for both chat fallback and silent no-op runs via `transcript.jsonl` `CHECKPOINT` verification (deduplicated across `thread/compact` and standalone `/compact`), plus automatic compaction visibility in BB's thread timeline |
 | Subscription quota/usage | Supported via `agy -p "/usage" --output-format json`, `provider/usage`, and `provider-usage.v1` |
 | Session rewind / message edit | Disabled: `agy acp` does not expose `session/rewind` |
-| Native `ask_question` UI | Disabled: BB's shared ACP bridge does not map `ask_question` tool calls to interactive question cards |
+| Native `ask_question` UI | agy 1.5.18 sends `ask_question` as an ACP `elicitation/create` form; BB's bridge shows it as a question card (choices plus free text) and returns the answer. `supportsNativeUserQuestion: true`; the proxy drops agy's fixed "The agent has a question." preamble |
 | Native archive/rename | Disabled: `agy acp` does not expose archive or rename operations |
-| BB Auto permission profile | Unsupported by the shared ACP bridge |
+| BB Auto permission profile | Mapped to agy's native Auto session mode; the bridge receives Accept edits with user review |
 
 Run `node scripts/smoke.mjs --capabilities --features --modes` for a no-prompt protocol check in a temporary workspace. Set `BB_AGY_ACP_PROXY=0` to bypass the ACP proxy for troubleshooting.

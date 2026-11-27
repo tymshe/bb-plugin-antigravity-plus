@@ -2,17 +2,12 @@ import type { AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-// Keep native mode IDs so the shared bridge can apply the selection unchanged.
+// agy's native mode select (default, accept-edits, auto, plan) mixes work mode
+// and approval policy. BB already offers both natively: the /plan composer
+// action and the permission-mode picker, so the select is hidden and
+// prompt-mode.ts derives the native mode from those two controls.
 function workModes(options: NonNullable<AvailableModel["sessionOptions"]>) {
-  return options.map(option => option.id !== "mode" || option.type !== "select" || !["plan", "accept-edits"].every(id => option.values.some(value => value.id === id)) ? option : {
-    ...option,
-    label: "Mode",
-    value: option.value === "plan" ? "plan" : "accept-edits",
-    values: [
-      { id: "accept-edits", label: "Build", description: "Implement the task using the selected permission policy." },
-      { id: "plan", label: "Plan", description: "Research and plan before implementation. Not enforced read-only access." },
-    ],
-  });
+  return options.filter(option => !(option.id === "mode" && option.type === "select"));
 }
 
 export function presentModeControls(line: string): string {

@@ -1,4 +1,5 @@
-// ACP combines planning and approval policy in a single native mode.
+// ACP combines planning and approval policy in a single native mode, derived
+// here from BB's /plan action and permission mode.
 //
 // BB's shared ACP bridge rejects permission mode "auto", but agy 1.5.4+ has a
 // native Auto session mode in which Antigravity reviews its own tool calls.
@@ -35,8 +36,9 @@ export function mapPromptMode(line: string, parsedLine?: unknown, autoAvailable?
     options.approvalReviewer = "user";
     if (typeof options.permissionEscalation !== "string") options.permissionEscalation = "ask";
   }
-  const plan = options.sessionOptions?.mode === "plan" ||
-    (options.sessionOptions?.mode !== "accept-edits" && options.promptMode === "plan");
+  // The native mode select is hidden (mode-controls.ts), so a stored
+  // sessionOptions.mode is stale; BB's /plan action is the only Plan switch.
+  const plan = options.promptMode === "plan";
   options.sessionOptions = {
     ...options.sessionOptions,
     mode: plan ? "plan" : nativeAuto && autoAvailable?.(request.params.threadId) !== false ? NATIVE_AUTO_MODE : "accept-edits",

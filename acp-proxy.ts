@@ -146,6 +146,13 @@ export function withSystemPrompt(meta: unknown, instructions: string): Json {
   return { ...base, antigravity: { ...antigravity, systemPrompt: { ...antigravity.systemPrompt, append: instructions } } };
 }
 
+/** agy's ask_question form request, whose only message is a fixed preamble. */
+export const GENERIC_QUESTION_MESSAGE = "The agent has a question.";
+export function isGenericQuestionElicitation(m: Json): boolean {
+  return m?.method === "elicitation/create" && m.id !== undefined && m.params?.mode === "form" &&
+    typeof m.params.message === "string" && m.params.message.trim() === GENERIC_QUESTION_MESSAGE;
+}
+
 const isRequest = (m: Json) => typeof m.method === "string" && m.id !== undefined && m.id !== null;
 const isResponse = (m: Json) => m.method === undefined && m.id !== undefined && ("result" in m || "error" in m);
 
@@ -211,6 +218,11 @@ export class AgyAcpProxy {
 
   fromAgent(line: string): void {
     const message = parse(line);
+    if (message && isGenericQuestionElicitation(message)) {
+      // ask_question sends a fixed preamble that BB would prepend to every card.
+      const { message: _preamble, ...params } = message.params;
+      return this.options.toClient(JSON.stringify({ ...message, params }));
+    }
     if (message?.method === "session/update" && this.compactions.size > 0) this.recordCompactionText(message);
     if (message && isResponse(message)) {
       const callback = typeof message.id === "string" ? this.internal.get(message.id) : undefined;
