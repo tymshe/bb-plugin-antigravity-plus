@@ -28,7 +28,7 @@ bb thread spawn --project "$BB_PROJECT_ID" --provider antigravity-plus --model g
 Work mode and permission mode are separate controls:
 
 - **Work mode (`--option mode=<accept-edits|plan>`).** `accept-edits` (**Build**, default) implements tasks under the active permission policy. `plan` (**Plan**) researches and outlines before editing (behavioral guidance, not enforced read-only access).
-- **Permission mode (`--permission-mode <accept-edits|full>`).** `accept-edits` runs workspace edits natively and handles other ACP prompts according to `acceptEditsApproval` (`ask`, `auto-in-sandbox`, or `auto-all`). `full` lets BB's shared bridge auto-approve every ACP request, including out-of-sandbox commands. `auto` is unsupported by BB's shared ACP bridge.
+- **Permission mode (`--permission-mode <accept-edits|auto|full>`).** `accept-edits` runs workspace edits natively and handles other ACP prompts according to `acceptEditsApproval` (`ask`, `auto-in-sandbox`, or `auto-all`). `full` lets BB's shared bridge auto-approve every ACP request, including out-of-sandbox commands. `auto` switches the agy session to Antigravity's native Auto mode (agy 1.5.4+): Antigravity reviews its own tool calls, and requests it escalates come to the user as approvals. The plugin hands BB's shared ACP bridge Accept edits (the bridge rejects `auto`) and selects native `mode=auto`; Plan wins over Auto. If the session does not advertise `auto`, the thread runs in Accept edits and shows a one-time warning.
 
 ## Swarms in BB
 

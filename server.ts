@@ -235,7 +235,7 @@ export default async function antigravity(bb: BbPluginApi) {
       supportsManualCompaction: true,
       supportsThreadArchive: false,
       supportsThreadRename: false,
-      permissionModes: ["accept-edits", "full"],
+      permissionModes: ["accept-edits", "auto", "full"],
       reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
     },
     composerActions: [],

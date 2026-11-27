@@ -159,6 +159,7 @@ Work mode and permission mode are independent controls:
 | Work mode | **Build** (default) | Implements the task under native Accept edits behavior and your chosen BB permission mode. |
 | Work mode | **Plan** | Selects Antigravity's native Plan mode to research and outline before editing. Plan guides agent behavior and does not enforce read-only access. |
 | Permissions | **Accept edits** | Workspace edits run natively. Other ACP prompts follow your `acceptEditsApproval` setting (`Ask for each request` by default). |
+| Permissions | **Auto** | Switches the agy session to Antigravity's native Auto mode (agy 1.5.4+), where Antigravity reviews its own tool calls. Requests it still escalates come to you in BB. Plan takes precedence. If the session does not offer Auto, the thread stays in Accept edits and shows a warning once. |
 | Permissions | **Full access** | BB's shared ACP bridge auto-approves every ACP permission request, including requests to run outside the CLI sandbox. |
 
 Configure plugin settings under **Settings -> Installed plugins -> Antigravity Provider +**:
@@ -178,7 +179,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the complete capability table.
 - **Mid-thread rewind and message editing** are disabled because `agy acp` does not expose `session/rewind`.
 - **Interactive `ask_question` cards** are not yet bridged by BB's shared ACP bridge.
 - **Swarm worker permissions in Accept edits mode.** Workers run inside the thread's active workspace. If a worker tries to read or write files outside the workspace in Accept edits mode, its approval prompt cannot route through the coordinator's ACP channel and will time out after 60 seconds. Keep worker targets inside the workspace or run the thread in Full access mode.
-- **BB `Auto` permission mode**, service tiers, and native thread archive or rename sync are not supported.
+- **BB `Auto` permission mode** maps to agy's native Auto session mode; it is available only where agy offers it (agy 1.5.4+, rolled out to the account, OS terminal sandbox). Service tiers and native thread archive or rename sync are not supported.
 - **Side-by-side coexistence.** Registers under `antigravity-plus` with its own dialect ID and state directory (`~/.bb/plugin-data/bb-plugin-antigravity-plus`), so it does not collide with other Antigravity plugins.
 
 | Problem | What to check |

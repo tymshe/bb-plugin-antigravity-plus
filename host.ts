@@ -5,7 +5,7 @@ import { createAutoCompactionTracker } from "./auto-compaction.ts";
 import { createBackgroundTaskTracker, defaultBackgroundTaskStatePath } from "./background-tasks.ts";
 import { ANTIGRAVITY_ACP_DIALECT_ID, applyThreadCommandDescriptionMessage, onToolUpdate, registerAntigravityAcpDialect } from "./dialect.ts";
 import { jsonlOutput, presentModeControlMessage } from "./mode-controls.ts";
-import { mapPromptMode } from "./prompt-mode.ts";
+import { mapPromptMode, NATIVE_AUTO_MODE } from "./prompt-mode.ts";
 import { createProfileBindings } from "./profile-bindings.ts";
 import { interceptSubagentApprovalMessage, isSubagentApprovalForDisabledThread, transformSubagentRequest } from "./subagents.ts";
 import { readSwarmBoard } from "./swarm-board.ts";
@@ -176,6 +176,39 @@ let proxyStateDir: string | undefined;
 const autoApproveThreads = new Map<string, boolean>();
 const promptOnSandboxEscapeThreads = new Map<string, boolean>();
 const commandDescriptionsThreads = new Map<string, boolean>();
+const nativeAutoOffered = new Map<string, boolean>();
+const nativeAutoWarned = new Set<string>();
+
+// Must run before presentModeControlMessage, which narrows the native modes to Build and Plan.
+export function recordNativeModes(message: any): void {
+  const threadId = message?.params?.threadId;
+  if (message?.method !== "thread/delta" || typeof threadId !== "string" || !Array.isArray(message.params.deltas)) return;
+  for (const delta of message.params.deltas) {
+    if (delta?.kind !== "extension.state" || delta.extensionKind !== "bb/session-options" || !Array.isArray(delta.payload?.options)) continue;
+    const mode = delta.payload.options.find((option: any) => option?.id === "mode" && Array.isArray(option.values));
+    if (mode) nativeAutoOffered.set(threadId, mode.values.some((value: any) => value?.id === NATIVE_AUTO_MODE));
+  }
+}
+
+function nativeAutoAvailable(threadId: string): boolean | undefined {
+  return nativeAutoOffered.get(threadId);
+}
+
+// Tell the user once per thread when BB Auto has to fall back to Accept edits.
+function warnIfNativeAutoUnavailable(request: any): void {
+  const threadId = request?.params?.threadId;
+  const method = request?.method;
+  if ((method !== "turn/start" && method !== "turn/steer") || typeof threadId !== "string" ||
+      request.params.options?.permissionMode !== "auto" || nativeAutoOffered.get(threadId) !== false ||
+      nativeAutoWarned.has(threadId)) return;
+  nativeAutoWarned.add(threadId);
+  const write = rawStdoutWrite ?? process.stdout.write.bind(process.stdout);
+  write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/delta", params: { threadId, deltas: [{
+    kind: "provider.warning",
+    summary: "Antigravity Auto is not available, using Accept edits",
+    details: "This agy session does not offer its native Auto mode, so requests are sent to you for approval. Auto needs agy 1.5.4+, an account where Google has rolled it out, and the OS terminal sandbox (try the plugin's sandbox setting).",
+  }] } })}\n`);
+}
 
 export function rememberApprovalSetting(request: any) {
   if (request?.method === "thread/stop" || request?.method === "thread/discard") {
@@ -187,6 +220,8 @@ export function rememberApprovalSetting(request: any) {
       sandboxEscapeByThread.delete(threadId);
       threadCwds.delete(threadId);
       openAssistantStreams.delete(threadId);
+      nativeAutoOffered.delete(threadId);
+      nativeAutoWarned.delete(threadId);
     }
     return;
   }
@@ -362,6 +397,7 @@ function processBridgeOutputLine(line: string): string[] {
   try { message = JSON.parse(line); } catch { return [line]; }
 
   if (interceptApprovalMessage(message)) return [];
+  recordNativeModes(message);
   const modesChanged = presentModeControlMessage(message);
   const profileChanged = getProfileBindings().processStdoutMessage(message);
   const descriptionsChanged = applyThreadCommandDescriptionMessage(message, commandDescriptionsThreads);
@@ -524,7 +560,8 @@ export const experimental_providerBridge = {
         write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/delta", params: { threadId: stopThreadId, deltas: closeDeltas } })}\n`);
       }
     }
-    experimental_acpProviderBridge.handleLine(mapPromptMode(subagentTransformed.line, subagentTransformed.parsed));
+    warnIfNativeAutoUnavailable(subagentTransformed.parsed);
+    experimental_acpProviderBridge.handleLine(mapPromptMode(subagentTransformed.line, subagentTransformed.parsed, nativeAutoAvailable));
   },
 };
 

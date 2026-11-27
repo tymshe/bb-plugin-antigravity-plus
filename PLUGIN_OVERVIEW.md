@@ -15,7 +15,7 @@ Antigravity Provider + runs on your existing Antigravity subscription and `agy` 
 
 ## Permissions and sandbox safety
 
-By default, **Accept edits** applies workspace edits natively and prompts you for each other ACP approval request (`Ask for each request`). In plugin settings you can switch to `Auto-approve in sandbox, ask on escape` or `Auto-approve all`. **Full access** auto-approves every ACP request, including out-of-sandbox commands. **Build** and **Plan** select native work modes. Plan guides agent behavior and does not enforce read-only access.
+By default, **Accept edits** applies workspace edits natively and prompts you for each other ACP approval request (`Ask for each request`). In plugin settings you can switch to `Auto-approve in sandbox, ask on escape` or `Auto-approve all`. **Auto** uses agy's native Auto mode. **Full access** auto-approves every ACP request, including out-of-sandbox commands. **Build** and **Plan** select native work modes. Plan guides agent behavior and does not enforce read-only access.
 
 New threads inherit your CLI sandbox settings unless you turn on the optional CLI sandbox toggle. See the [Antigravity sandbox docs](https://antigravity.google/docs/sandbox/?tab=cli).
 
@@ -27,4 +27,4 @@ Requires BB 0.50+, Node.js 22+, Antigravity CLI 1.5.0+ (`1.5.14+` for `/compact`
 
 Registers under `antigravity-plus` with its own state directory, so it installs cleanly side by side without touching existing threads.
 
-Forking works at the latest message only. Mid-thread rewind, message editing, BB Auto permission mode, service tiers, interactive `ask_question` cards, and native archive or rename sync are not supported.
+Forking works at the latest message only. Mid-thread rewind, message editing, service tiers, interactive `ask_question` cards, and native archive or rename sync are not supported.

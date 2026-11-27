@@ -39,7 +39,7 @@ test('registers a native ACP provider without changing credentials or bypassing 
   assert.deepEqual(spec.env, {});
   assert.equal(spec.cwd, undefined);
   assert.equal(spec.permissionCli, undefined);
-  assert.deepEqual(provider.capabilities.permissionModes, ['accept-edits', 'full']);
+  assert.deepEqual(provider.capabilities.permissionModes, ['accept-edits', 'auto', 'full']);
   assert.deepEqual(provider.capabilities.reasoningLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(provider.maintenance, { health: true, usage: true, installation: true });
   assert.equal(provider.experimental_bridgeOptions.acpDialect, 'antigravity-plus');
