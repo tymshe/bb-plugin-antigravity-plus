@@ -13,14 +13,6 @@ import manifest from '../package.json' with { type: 'json' };
 
 const command = resolveAntigravityCommand('agy');
 if (!command) throw new Error('Antigravity CLI was not found on this host.');
-if (process.argv.includes('--usage')) {
-  const { stdout, stderr } = await experimental_execHostFile(command, ['--version'], { timeout: 10_000 });
-  assert.ok(parseAgyVersion(stdout + '\n' + stderr), 'Could not parse agy --version.');
-  const { usage } = providerUsageResultSchema.parse(await readAntigravityProviderUsage({ command }));
-  assert.equal(usage?.status, 'ok', 'Usage probe did not return quota windows.');
-  assert.ok(usage.windows.length > 0, 'Usage probe returned no quota windows.');
-  console.log('CLI version and quota windows passed.');
-}
 const cwd = await mkdtemp(join(tmpdir(), 'bb-antigravity-smoke-'));
 const child = spawn(command, ['acp', '--disable-telemetry'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
 const closed = new Promise(resolve => child.once('close', resolve));
@@ -59,6 +51,15 @@ const timeout = setTimeout(() => { child.kill(); process.exitCode = 1; }, 60000)
 child.on('error', () => { for (const p of pending.values()) p.reject(new Error('Could not launch agy')); });
 child.on('exit', () => { for (const p of pending.values()) p.reject(new Error('ACP exited before completing')); });
 try {
+  if (process.argv.includes('--usage')) {
+    const { stdout, stderr } = await experimental_execHostFile(command, ['--version'], { cwd, timeout: 10_000 });
+    assert.ok(parseAgyVersion(stdout + '\n' + stderr), 'Could not parse agy --version.');
+    const { usage } = providerUsageResultSchema.parse(await readAntigravityProviderUsage({ command, cwd }));
+    assert.equal(usage?.status, 'ok', 'Usage probe did not return quota windows.');
+    assert.ok(usage.windows.length > 0, 'Usage probe returned no quota windows.');
+    console.log('CLI version and quota windows passed.');
+    console.log('Quota windows in display order', JSON.stringify(usage.windows.map(window => window.label)));
+  }
   const initialized = await request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'bb-antigravity-plus-smoke', version: manifest.version } });
   assert.equal(initialized.protocolVersion, 1);
   if (process.argv.includes('--capabilities')) console.log(JSON.stringify(initialized.agentCapabilities, null, 2));
@@ -71,7 +72,7 @@ try {
     for (const modeId of ['plan', 'accept-edits']) {
       await request('session/set_mode', { sessionId: session.sessionId, modeId });
     }
-    console.log('Native Plan/Build mode transitions passed.');
+    console.log('Native Plan and Accept edits mode transitions passed.');
   }
   if (process.argv.includes('--features')) {
     const second = await request('session/new', { cwd, mcpServers: [] });

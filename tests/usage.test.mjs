@@ -83,13 +83,6 @@ test('normalizes Antigravity per-model quota groups into BB usage windows', () =
   assert.equal(parsed.usage.status, 'ok');
   assert.deepEqual(parsed.usage.windows, [
     {
-      label: 'Gemini 7d',
-      usedPercent: 4,
-      resetsAt: '2026-11-11T18:50:51.000Z',
-      kind: 'custom',
-      model: null,
-    },
-    {
       label: 'Gemini 5h',
       usedPercent: 10,
       resetsAt: '2026-11-05T15:30:15.000Z',
@@ -97,9 +90,9 @@ test('normalizes Antigravity per-model quota groups into BB usage windows', () =
       model: null,
     },
     {
-      label: 'Claude/GPT 7d',
-      usedPercent: 83,
-      resetsAt: '2026-11-11T22:11:24.000Z',
+      label: 'Gemini 7d',
+      usedPercent: 4,
+      resetsAt: '2026-11-11T18:50:51.000Z',
       kind: 'custom',
       model: null,
     },
@@ -111,6 +104,13 @@ test('normalizes Antigravity per-model quota groups into BB usage windows', () =
       model: null,
     },
     {
+      label: 'Claude/GPT 7d',
+      usedPercent: 83,
+      resetsAt: '2026-11-11T22:11:24.000Z',
+      kind: 'custom',
+      model: null,
+    },
+    {
       label: 'Argon 7d',
       usedPercent: 35,
       resetsAt: '2026-11-11T20:39:54.000Z',
@@ -118,6 +118,23 @@ test('normalizes Antigravity per-model quota groups into BB usage windows', () =
       model: null,
     },
   ]);
+});
+
+test('reorders ungrouped 5h and 7d quotas within their visible slots', () => {
+  const buckets = [
+    { name: 'Monthly limit', window: 'monthly' },
+    { name: 'Weekly limit' },
+    { name: 'Daily limit', window: 'daily' },
+    { name: 'Five hour limit' },
+    { name: 'Annual limit', window: 'yearly' },
+  ];
+  const labels = (buckets) => {
+    const input = JSON.stringify({ command: { name: 'usage', data: { buckets } } });
+    return normalizeAntigravityUsageOutput(input).usage.windows.map(window => window.label);
+  };
+  assert.deepEqual(labels(buckets), ['monthly', '5h', '1d', '7d', 'yearly']);
+  buckets[3].disabled = true;
+  assert.deepEqual(labels(buckets), ['monthly', '7d', '1d', 'yearly']);
 });
 
 test('formats bucket window labels concisely', () => {
@@ -291,7 +308,9 @@ test('registers discoverable provider-usage.v1 RPC handlers and returns host usa
   });
   assert.equal(getResult.usage.status, 'ok');
   assert.equal(getResult.usage.windows.length, 5);
-  assert.equal(getResult.usage.windows[0].label, 'Gemini 7d');
+  assert.deepEqual(getResult.usage.windows.map(window => window.label), [
+    'Gemini 5h', 'Gemini 7d', 'Claude/GPT 5h', 'Claude/GPT 7d', 'Argon 7d',
+  ]);
 });
 
 test('evicts cached usage when the provider is removed', async () => {

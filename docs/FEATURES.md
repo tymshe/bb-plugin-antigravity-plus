@@ -13,7 +13,7 @@ Verified against Antigravity CLI 1.5.16 on macOS (BB Desktop), 1.5.14 on Linux, 
 | Command & tool presentation | Command cards show output once and preserve literal stdout after the wrapper. Cards also show exit codes, optional `toolSummary` descriptions, and **Outside of sandbox** badges for `BypassSandbox`. |
 | Sandbox-escape guard | `acceptEditsApproval` setting (`ask` default, `auto-in-sandbox`, or `auto-all`) lets you auto-approve routine in-sandbox requests in Accept edits mode while still prompting for **Outside of sandbox** commands |
 | Model catalog and reasoning | Host-scoped model cache (`models.scope: "host"`); supports `low`, `medium`, `high`, `xhigh`, and `max` depending on model and account |
-| Plan/Build | One Mode selector mapped to native Plan/Accept edits with provider-specific `planModeCopy` and no duplicate Plan action |
+| Plan | BB's `/plan` composer action selects native Plan. The plugin hides the CLI's raw mode select. Plan takes precedence over native Auto. |
 | Accept edits / Full access | Shared bridge permission policy |
 | Per-session worker isolation | `--process-per-session` gives each thread its own worker. The proxy strips `ELECTRON_RUN_AS_NODE` before launching `agy` or probing its version. |
 | CLI terminal sandbox | Inherits CLI settings; optional `sandbox` flag adds `--sandbox` for new threads |
@@ -22,10 +22,10 @@ Verified against Antigravity CLI 1.5.16 on macOS (BB Desktop), 1.5.14 on Linux, 
 | Native skills in BB picker | Workspace `.agents/skills` (ancestors) and `.agent/skills`; user `.gemini/antigravity-cli/skills`, `.gemini/skills`, `.gemini/config/skills`, and `.agents/skills` (lowest-precedence cross-agent fallback). CLI-internal builtin skills stay internal to `agy`. |
 | Tip fork | Supported (`fork: "tip"`) through the ACP proxy (`VACUUM INTO` + ID swap + `brain/` copy), with automatic pass-through if `agy` advertises native `session/fork` |
 | Manual and automatic compaction | Manual `/compact` (`agy 1.5.14+`) verifies a new transcript checkpoint. A regular turn clears a pending manual request that never opened a compaction card. If the transcript shrinks, automatic tracking starts from the new end. |
-| Subscription quota/usage | `agy -p "/usage" --output-format json` supplies quota data to BB. A transient host or provider lookup error reports usage unavailable and preserves the last observation. |
+| Subscription quota/usage | `agy -p "/usage" --output-format json` supplies quota data to BB. Each model group displays 5-hour quotas before 7-day quotas. A transient host or provider lookup error reports usage unavailable and preserves the last observation. |
 | Session rewind / message edit | Disabled: `agy acp` does not expose `session/rewind` |
-| Native `ask_question` UI | Disabled: BB's shared ACP bridge does not map `ask_question` tool calls to interactive question cards |
+| Native `ask_question` UI | `agy 1.5.18+` sends questions as ACP forms. BB displays choices and free text. The proxy removes the CLI's fixed preamble and preserves custom messages. |
 | Native archive/rename | Disabled: `agy acp` does not expose archive or rename operations |
-| BB Auto permission profile | Unsupported by the shared ACP bridge |
+| BB Auto permission mode | Requires `agy 1.5.4+`, account rollout, and the OS terminal sandbox. Antigravity reviews tool calls and escalates to the user in BB. If Auto is unavailable, BB warns once per thread and uses Accept edits with user review. |
 
 Run `npm run smoke -- --capabilities --features --modes` for a protocol check in a temporary workspace. Add `--usage` to verify the CLI version and quota windows with a signed-in CLI. Set `BB_AGY_ACP_PROXY=0` to bypass the ACP proxy for troubleshooting.

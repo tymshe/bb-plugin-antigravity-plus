@@ -1,82 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { createInterface } from 'node:readline';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const hostFixture = fileURLToPath(new URL('./host-bridge-fixture.mjs', import.meta.url));
+import { sessionParams, setupFakeAgy, withHost } from './host-bridge-fixture.mjs';
 const agentFixture = fileURLToPath(new URL('./fake-acp-recorder.mjs', import.meta.url));
 
-function setup(t) {
-  const root = mkdtempSync(join(tmpdir(), 'agy-profile-binding-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const home = join(root, 'home');
-  mkdirSync(home);
-  const spawns = join(root, 'spawns');
-  writeFileSync(spawns, '');
-  const agy = join(root, 'agy');
-  // The host resolves the real executable from PATH. The fixture records launches before reading ACP input.
-  writeFileSync(agy, `#!/bin/sh\nexec "${process.execPath}" "${agentFixture}" "$@"\n`, { mode: 0o755 });
-  const stateDir = join(root, 'state');
-  const env = {
-    ...process.env, HOME: home, USERPROFILE: home, PATH: root + delimiter + process.env.PATH,
-    BB_ANTIGRAVITY_TASK_STATE_DIR: stateDir, AGY_TEST_SPAWNS: spawns,
-  };
-  delete env.BB_ANTIGRAVITY_GEMINI_DIR;
-  delete env.BB_ANTIGRAVITY_APP_DATA_DIR;
-  delete env.BB_AGY_ACP_PROXY;
-  return { root, env, stateDir, launches: () => readFileSync(spawns, 'utf8').trim().split('\n').filter(Boolean) };
-}
-
-async function withHost(env, run) {
-  const child = spawn(process.execPath, ['--experimental-strip-types', hostFixture], {
-    env, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  const closed = once(child, 'close');
-  const messages = [];
-  let stderr = '';
-  let id = 0;
-  child.stderr.on('data', chunk => { stderr += chunk; });
-  createInterface({ input: child.stdout }).on('line', line => messages.push(JSON.parse(line)));
-  async function waitFor(predicate) {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline && child.exitCode === null) {
-      const message = messages.find(predicate);
-      if (message) return message;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    assert.fail(`Bridge did not respond. Stderr: ${stderr}\nMessages: ${JSON.stringify(messages)}`);
-  }
-  async function call(method, params) {
-    const requestId = ++id;
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, id: requestId, params }) + '\n');
-    return waitFor(message => message.id === requestId && !message.method);
-  }
-  try {
-    assert.ok((await call('initialize', { protocolVersion: 1, client: { name: 'test', version: '1' } })).result);
-    await run({ call, messages, waitFor });
-  } finally {
-    child.stdin.end();
-    const timeout = setTimeout(() => child.kill(), 3000);
-    await closed;
-    clearTimeout(timeout);
-  }
-}
-
-function sessionParams(cwd, threadId = 'thread') {
-  return {
-    threadId, cwd, instructionMode: 'append',
-    options: {
-      permissionMode: 'accept-edits', permissionScope: 'workspace',
-      approvalReviewer: 'user', permissionEscalation: 'ask',
-      providerOptions: { acpLaunchSpec: { displayName: 'Fake agy', command: 'agy', args: ['acp'] } },
-    },
-  };
-}
+const setup = t => setupFakeAgy(t, agentFixture);
 
 test('the host rejects profile drift across restarts before opening agy', { skip: process.platform === 'win32' }, async t => {
   const { root, env, stateDir, launches } = setup(t);

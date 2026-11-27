@@ -49,7 +49,7 @@ Run these steps locally on a machine with BB and a signed-in `agy` CLI:
    bb provider models antigravity-plus --json
    ```
    Verify in BB Desktop:
-   - Streaming reply, Build/Plan mode toggle, and reasoning levels (`low` through `max`).
+   - Streaming reply, the `/plan` composer action, and reasoning levels (`low` through `max`).
    - Tip fork (`Fork`) and manual `/compact`.
    - `/swarm` run: Swarm side-panel tab auto-opens, composer pill toggles it, and swarm timeline cards render cleanly.
    - Provider maintenance (`health`, `usage`, `installation`) and Settings panel.

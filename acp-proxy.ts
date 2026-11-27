@@ -22,6 +22,9 @@
  * Fourth behaviour. The proxy maps an executor-busy prompt error to the ACP session_busy
  * code and reason so the shared bridge can retry the prompt.
  *
+ * Fifth behaviour. The proxy drops the fixed ask_question preamble from ACP forms.
+ * BB can then show the question text on the card. Custom messages pass through.
+ *
  * Design notes:
  * - The host artifact doubles as the proxy executable: host.ts rewrites the agy launch
  *   spec to `node <host.mjs> --agy-acp-proxy <agy> acp ...` on the agent host, so nothing
@@ -240,6 +243,11 @@ export class AgyAcpProxy {
 
   fromAgent(line: string): void {
     const message = parse(line);
+    if (message?.method === "elicitation/create" && isRequest(message) &&
+        message.params?.mode === "form" && message.params.message === "The agent has a question.") {
+      const { message: _preamble, ...params } = message.params;
+      return this.options.toClient(JSON.stringify({ ...message, params }));
+    }
     if (message?.method === "session/update" && this.compactions.size > 0) this.recordCompactionText(message);
     if (message && isResponse(message)) {
       const callback = typeof message.id === "string" ? this.internal.get(message.id) : undefined;

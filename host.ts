@@ -176,6 +176,44 @@ let proxyStateDir: string | undefined;
 const autoApproveThreads = new Map<string, boolean>();
 const promptOnSandboxEscapeThreads = new Map<string, boolean>();
 const commandDescriptionsThreads = new Map<string, boolean>();
+const nativeAutoOffered = new Set<string>();
+const nativeAutoWarned = new Set<string>();
+
+// Read the native options before hiding the mode select from BB.
+function recordNativeModes(message: any): void {
+  const params = message?.params;
+  if (message?.method !== "thread/delta" || typeof params?.threadId !== "string" || !Array.isArray(params.deltas)) return;
+  for (const delta of params.deltas) {
+    const options = delta?.payload?.options;
+    if (delta?.kind !== "extension.state" || delta.extensionKind !== "bb/session-options" || !Array.isArray(options)) continue;
+    const mode = options.find(option => option?.id === "mode" && option.type === "select");
+    if (Array.isArray(mode?.values) && mode.values.some((value: unknown) =>
+      value !== null && typeof value === "object" && "id" in value && value.id === "auto"
+    )) {
+      nativeAutoOffered.add(params.threadId);
+    } else {
+      nativeAutoOffered.delete(params.threadId);
+    }
+  }
+}
+
+function warnIfNativeAutoUnavailable(request: any): void {
+  const threadId = request?.params?.threadId;
+  if ((request?.method !== "turn/start" && request?.method !== "turn/steer") ||
+      typeof threadId !== "string" || request.params.options?.permissionMode !== "auto" ||
+      nativeAutoOffered.has(threadId) || nativeAutoWarned.has(threadId)) return;
+  nativeAutoWarned.add(threadId);
+  const write = rawStdoutWrite ?? process.stdout.write.bind(process.stdout);
+  write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    method: "thread/delta",
+    params: { threadId, deltas: [{
+      kind: "provider.warning",
+      summary: "Antigravity Auto is unavailable",
+      details: "Auto requires agy 1.5.4+, account rollout, and the OS terminal sandbox. Turns without /plan use Accept edits with user review. You can enable the CLI sandbox in plugin settings.",
+    }] },
+  })}\n`);
+}
 
 export function rememberApprovalSetting(request: any) {
   if (request?.method === "thread/stop" || request?.method === "thread/discard") {
@@ -187,12 +225,18 @@ export function rememberApprovalSetting(request: any) {
       sandboxEscapeByThread.delete(threadId);
       threadCwds.delete(threadId);
       openAssistantStreams.delete(threadId);
+      nativeAutoOffered.delete(threadId);
+      nativeAutoWarned.delete(threadId);
     }
     return;
   }
   const method = request?.method;
   const params = request?.params;
   if (!params || typeof params !== "object" || typeof params.threadId !== "string") return;
+
+  if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
+    nativeAutoOffered.delete(params.threadId);
+  }
 
   if (typeof params.cwd === "string" && params.cwd.trim().length > 0) {
     threadCwds.set(params.threadId, resolve(params.cwd));
@@ -217,7 +261,9 @@ export function rememberApprovalSetting(request: any) {
     if (providerOptions && typeof providerOptions === "object") {
       promptOnSandboxEscapeThreads.set(params.threadId, providerOptions.promptOnSandboxEscape !== false);
     }
-    if (typeof options.permissionMode === "string" && typeof options.permissionEscalation === "string") {
+    if (options.permissionMode === "auto") {
+      autoApproveThreads.delete(params.threadId);
+    } else if (typeof options.permissionMode === "string" && typeof options.permissionEscalation === "string") {
       autoApproveThreads.set(
         params.threadId,
         providerOptions?.autoApprove === true &&
@@ -362,6 +408,7 @@ function processBridgeOutputLine(line: string): string[] {
   try { message = JSON.parse(line); } catch { return [line]; }
 
   if (interceptApprovalMessage(message)) return [];
+  recordNativeModes(message);
   const modesChanged = presentModeControlMessage(message);
   const profileChanged = getProfileBindings().processStdoutMessage(message);
   const descriptionsChanged = applyThreadCommandDescriptionMessage(message, commandDescriptionsThreads);
@@ -398,6 +445,8 @@ function disposeTracker() {
   autoCompactionInstance?.dispose();
   profileBindings = undefined;
   openAssistantStreams.clear();
+  nativeAutoOffered.clear();
+  nativeAutoWarned.clear();
 }
 
 export const experimental_providerBridge = {
@@ -525,7 +574,13 @@ export const experimental_providerBridge = {
         write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/delta", params: { threadId: stopThreadId, deltas: closeDeltas } })}\n`);
       }
     }
-    experimental_acpProviderBridge.handleLine(mapPromptMode(subagentTransformed.line, subagentTransformed.parsed));
+    warnIfNativeAutoUnavailable(subagentTransformed.parsed);
+    const threadId = (subagentTransformed.parsed as { params?: { threadId?: unknown } } | null)?.params?.threadId;
+    experimental_acpProviderBridge.handleLine(mapPromptMode(
+      subagentTransformed.line,
+      subagentTransformed.parsed,
+      typeof threadId === "string" && nativeAutoOffered.has(threadId),
+    ));
   },
 };
 

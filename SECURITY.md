@@ -6,7 +6,11 @@ The plugin registers one provider (`antigravity-plus`), runs a local ACP proxy i
 
 The plugin stores 5 settings in BB settings (`autoOpenSwarmBoard`, `commandDescriptionsEnabled`, `subagentsDisabled`, `acceptEditsApproval`, `sandbox`). Existing credentials remain managed by Antigravity CLI. The plugin does not copy or bundle credentials. Prompts, workspace context, and tool results are processed by Antigravity and its service under Google's policies; BB and the CLI retain their normal local conversation records and diagnostics. Passing `--disable-telemetry` does not disable service processing or those local records.
 
-Antigravity's normal approval checks stay enabled in Accept edits mode by default (`acceptEditsApproval: "ask"`). Setting `acceptEditsApproval` to `"auto-in-sandbox"` answers routine ACP permission requests automatically on new turns while continuing to prompt for commands requesting execution outside the CLI sandbox. Setting `"auto-all"` or selecting Full access allows out-of-sandbox commands to approve automatically. Plan mode is agent behavior, not enforced read-only access. Only open trusted workspaces.
+In Accept edits mode, `acceptEditsApproval` defaults to `"ask"`. Set it to `"auto-in-sandbox"` to auto-approve routine requests and keep prompts for commands outside the CLI sandbox. Setting `"auto-all"` or selecting Full access allows automatic approval outside the sandbox. BB's `/plan` action guides agent behavior. It does not enforce read-only access. Only open trusted workspaces.
+
+Auto requires `agy 1.5.4+`, account rollout, and the OS terminal sandbox. Antigravity reviews its own tool calls and sends escalations to you in BB. The plugin ignores `acceptEditsApproval` in Auto. When the session lacks native Auto, BB warns once per thread and falls back to Accept edits with user review.
+
+With `agy 1.5.18+`, BB sends your `ask_question` card answers to Antigravity as ACP form responses.
 
 The ACP proxy removes `ELECTRON_RUN_AS_NODE` from the environment for both `agy acp` and its fallback `agy --version` probe.
 
@@ -30,6 +34,6 @@ Before committing, review `git diff --cached` and `git diff --cached --name-only
 
 Use a GitHub `noreply` commit email if you want email privacy, and verify it with `git var GIT_AUTHOR_IDENT` before committing.
 
-Before releasing, run the checks in the release guide and visually inspect every screenshot. CI uses an isolated home and fails if tests create `.bb`. The release check validates the provider declaration and settings with the SDK and checks the package contents. The opt-in usage smoke check inspects quota windows and reports only whether the checks passed. [Release guide](docs/RELEASE.md)
+Before releasing, run the checks in the release guide and visually inspect every screenshot. CI uses an isolated home and fails if tests create `.bb`. The release check validates the provider declaration and settings with the SDK and checks the package contents. The opt-in usage smoke check prints quota window labels in display order. [Release guide](docs/RELEASE.md)
 
 If a credential is exposed, revoke or rotate it immediately, then remove it and assess Git history cleanup.

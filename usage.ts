@@ -39,7 +39,6 @@ const agyUsageCommandSchema = z.object({
 }).passthrough();
 
 type AgyBucket = z.infer<typeof agyBucketSchema>;
-type AgyGroup = z.infer<typeof agyGroupSchema>;
 
 function clampUsedPercent(remainingFraction: number): number {
   if (!Number.isFinite(remainingFraction)) return 0;
@@ -85,6 +84,26 @@ function formatWindowSuffix(bucket: AgyBucket): string {
   const withoutRemaining = stripTrailingToken(normalizedName, "remaining");
   const withoutLimit = stripTrailingToken(withoutRemaining, "limit");
   return withoutLimit.toLowerCase() === "limit" ? "" : withoutLimit;
+}
+
+function orderedUsageBuckets(buckets: AgyBucket[]): AgyBucket[] {
+  const visible = buckets.filter(bucket =>
+    !bucket.disabled && (bucket.remaining_fraction !== undefined || bucket.remaining_amount === undefined)
+  );
+  const slots: number[] = [];
+  const fiveHour: AgyBucket[] = [];
+  const weekly: AgyBucket[] = [];
+  for (const [index, bucket] of visible.entries()) {
+    const period = formatWindowSuffix(bucket);
+    if (period !== "5h" && period !== "7d") continue;
+    slots.push(index);
+    const samePeriod = period === "5h" ? fiveHour : weekly;
+    samePeriod.push(bucket);
+  }
+  // Other limits keep their positions in the group.
+  const ordered = fiveHour.concat(weekly);
+  slots.forEach((slot, index) => { visible[slot] = ordered[index]; });
+  return visible;
 }
 
 export function formatBucketWindowLabel(groupName: string | null, bucket: AgyBucket): string {
@@ -137,29 +156,17 @@ export function normalizeAntigravityUsageOutput(stdout: string): ProviderUsageRe
     model: null;
   }> = [];
 
-  const appendBucket = (groupName: string | null, bucket: AgyBucket) => {
-    if (bucket.disabled === true) return;
-    if (bucket.remaining_fraction === undefined && bucket.remaining_amount !== undefined) return;
-    const remainingFraction = bucket.remaining_fraction ?? 0;
-    windows.push({
-      label: formatBucketWindowLabel(groupName, bucket),
-      usedPercent: clampUsedPercent(remainingFraction),
-      resetsAt: normalizeResetIso(bucket.reset_time),
-      kind: "custom",
-      model: null,
-    });
-  };
-
   const data = parsed.data.command.data;
-  if (data.groups.length > 0) {
-    for (const group of data.groups as AgyGroup[]) {
-      for (const bucket of group.buckets) {
-        appendBucket(group.name, bucket);
-      }
-    }
-  } else if (Array.isArray(data.buckets)) {
-    for (const bucket of data.buckets) {
-      appendBucket(null, bucket);
+  const groups = data.groups.length ? data.groups : [{ name: null, buckets: data.buckets ?? [] }];
+  for (const group of groups) {
+    for (const bucket of orderedUsageBuckets(group.buckets)) {
+      windows.push({
+        label: formatBucketWindowLabel(group.name, bucket),
+        usedPercent: clampUsedPercent(bucket.remaining_fraction ?? 0),
+        resetsAt: normalizeResetIso(bucket.reset_time),
+        kind: "custom",
+        model: null,
+      });
     }
   }
 

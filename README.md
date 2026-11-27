@@ -5,7 +5,7 @@
 <h1 align="center">Antigravity Provider +</h1>
 
 <p align="center">
-  Use Google Antigravity CLI in BB with built-in 5h and 7d quota tracking, reload-safe instructions, thread forking, manual <code>/compact</code>, per-model reasoning, and a live <code>/swarm</code> board.
+  Use Google Antigravity CLI in BB with built-in 5h and 7d quota tracking, reload-safe instructions, native Auto and <code>/plan</code>, question cards, thread forking, manual <code>/compact</code>, per-model reasoning, and a live <code>/swarm</code> board.
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 
 **Antigravity Provider +** (`antigravity-plus`) runs on your existing [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli) (`agy`) subscription and login, adding native BB workflow controls and built-in quota tracking beyond a manual ACP setup. No extra API keys or custom ACP JSON required.
 
-Verified on macOS (`agy 1.5.16`, BB Desktop), Linux (`agy 1.5.14`), and Windows (`agy 1.5.1+`). Installs side by side under `antigravity-plus` without touching existing Antigravity threads.
+Verified on macOS (`agy 1.5.18`, BB Desktop), Linux (`agy 1.5.14`), and Windows (`agy 1.5.1+`). Installs side by side under `antigravity-plus` without touching existing Antigravity threads.
 
 ## Quick install
 
@@ -36,14 +36,14 @@ Verified on macOS (`agy 1.5.16`, BB Desktop), Linux (`agy 1.5.14`), and Windows 
 bb plugin install antigravity-plus
 ```
 
-Requires BB `0.50+`, Node.js `22+`, and Antigravity CLI `1.5.0+` (`1.5.14+` for `/compact`) signed in on the target host (`agy acp --login`). See [Getting started](#getting-started) for full setup and remote hosts.
+Requires BB `0.50+`, Node.js `22+`, and Antigravity CLI `1.5.0+` (`1.5.4+` for Auto, `1.5.14+` for `/compact`, `1.5.18+` for `ask_question` cards) signed in on the target host (`agy acp --login`). See [Getting started](#getting-started) for full setup and remote hosts.
 
 ## Screenshots
 
 <p align="center">
   <img src="assets/screenshots/thread-workflow.png" width="520" alt="Antigravity Provider + thread workflow, compaction, and live model picker in BB">
   <br>
-  <sub>Active Antigravity thread with native <code>/compact</code> status, live model and reasoning picker, <strong>Build</strong> mode, and <strong>Accept Edits</strong>.</sub>
+  <sub>Active Antigravity thread with native <code>/compact</code> status, a live model and reasoning picker, and <strong>Approve for me</strong> (Auto) permissions.</sub>
 </p>
 
 <table>
@@ -74,7 +74,7 @@ Requires BB `0.50+`, Node.js `22+`, and Antigravity CLI `1.5.0+` (`1.5.14+` for 
 | **Thread forking** | ❌ Unavailable | ✅ Fork at latest message (native pass-through when CLI adds it) |
 | **Manual and auto `/compact`** | ❌ Unavailable | ✅ Native `/compact` plus **Compacted context** timeline cards |
 | **Per-model reasoning** | ⚠️ Coarse subset | ✅ Full model ladder (including `xhigh` and `max` where supported) |
-| **Work modes** | ⚠️ Raw ACP modes | ✅ Single **Build** / **Plan** mode selector |
+| **Work modes** | ⚠️ Raw ACP modes | ✅ BB's `/plan` action and permission picker |
 | **Command cards and safety** | ⚠️ Raw shell strings, no escape guard | ✅ Plain-English summaries, **Outside of sandbox** badges, sandbox-only auto-approve |
 | **Live `/swarm` board** | ❌ Terminal-only `alt+s` hint | ✅ Native **Swarm** panel tab, composer pill, and readable swarm cards |
 | **Background tasks and skills** | ❌ Silent until done | ✅ Live background banners across restarts, BB subagent option, user and workspace skills |
@@ -152,14 +152,14 @@ Pick **Antigravity Provider +** (`antigravity-plus`) in BB's provider selector, 
 
 ## Modes, permissions, and settings
 
-Work mode and permission mode are independent controls:
-
 | Control | Choice | Behavior |
 | :--- | :--- | :--- |
-| Work mode | **Build** (default) | Implements the task under native Accept edits behavior and your chosen BB permission mode. |
-| Work mode | **Plan** | Selects Antigravity's native Plan mode to research and outline before editing. Plan guides agent behavior and does not enforce read-only access. |
+| Composer action | **`/plan`** | Selects Antigravity's native Plan mode ahead of Auto. Plan guides the agent to research and outline before editing. The permission picker still controls approvals. |
 | Permissions | **Accept edits** | Workspace edits run natively. Other ACP prompts follow your `acceptEditsApproval` setting (`Ask for each request` by default). |
+| Permissions | **Auto** | Antigravity reviews its own tool calls and asks you to approve escalations in BB. Auto requires `agy 1.5.4+`, account rollout, and the OS terminal sandbox. If the session lacks Auto, BB warns once per thread and uses Accept edits with user review. |
 | Permissions | **Full access** | BB's shared ACP bridge auto-approves every ACP permission request, including requests to run outside the CLI sandbox. |
+
+Plan is behavioral guidance. It does not enforce read-only access. The plugin hides the CLI's raw mode picker.
 
 Configure plugin settings under **Settings -> Installed plugins -> Antigravity Provider +**:
 
@@ -176,9 +176,9 @@ Configure plugin settings under **Settings -> Installed plugins -> Antigravity P
 See [docs/FEATURES.md](docs/FEATURES.md) for the complete capability table.
 
 - **Mid-thread rewind and message editing** are disabled because `agy acp` does not expose `session/rewind`.
-- **Interactive `ask_question` cards** are not yet bridged by BB's shared ACP bridge.
+- **Interactive `ask_question` cards** require `agy 1.5.18+`. BB shows choices and a free-text field in the thread and returns your answer to Antigravity.
 - **Swarm worker permissions in Accept edits mode.** Workers run inside the thread's active workspace. If a worker tries to read or write files outside the workspace in Accept edits mode, its approval prompt cannot route through the coordinator's ACP channel and will time out after 60 seconds. Keep worker targets inside the workspace or run the thread in Full access mode.
-- **BB `Auto` permission mode**, service tiers, and native thread archive or rename sync are not supported.
+- **Service tiers and native thread archive or rename sync** are unavailable.
 - **Side-by-side coexistence.** Registers under `antigravity-plus` with its own dialect ID and state directory (`~/.bb/plugin-data/bb-plugin-antigravity-plus`), so it does not collide with other Antigravity plugins.
 
 | Problem | What to check |

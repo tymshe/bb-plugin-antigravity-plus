@@ -164,8 +164,8 @@ if (bbDesc !== String(entry.description ?? "").trim()) {
   fail("package.json bb.description does not match docs/marketplace-entry.template.json description");
 }
 const hook = `${bbDesc.split(". ")[0].replace(/\.$/, "")}.`;
-if (hook.length > 140) {
-  fail(`marketplace description hook is ${hook.length} chars (target <= 140)`);
+if (bbDesc.length > 140) {
+  fail(`package.json bb.description is ${bbDesc.length} chars (target <= 140)`);
 }
 if (hook.toLowerCase().startsWith("a plugin") || hook.toLowerCase().startsWith(entry.displayName.toLowerCase())) {
   fail(`marketplace description hook must start with a verb, not display name or "A plugin": "${hook}"`);

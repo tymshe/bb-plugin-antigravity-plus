@@ -230,15 +230,15 @@ export default async function antigravity(bb: BbPluginApi) {
     maintenance: { health: true, usage: true, installation: true },
     capabilities: {
       supportsServiceTier: false,
-      supportsNativeUserQuestion: false,
+      supportsNativeUserQuestion: true,
       fork: "tip",
       supportsManualCompaction: true,
       supportsThreadArchive: false,
       supportsThreadRename: false,
-      permissionModes: ["accept-edits", "full"],
+      permissionModes: ["accept-edits", "auto", "full"],
       reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
     },
-    composerActions: [],
+    composerActions: ["plan"],
     models: { fallback: [], scope: "host" },
     env: {
       passthrough: [

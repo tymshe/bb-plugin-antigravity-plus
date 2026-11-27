@@ -2,17 +2,9 @@ import type { AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-// Keep native mode IDs so the shared bridge can apply the selection unchanged.
-function workModes(options: NonNullable<AvailableModel["sessionOptions"]>) {
-  return options.map(option => option.id !== "mode" || option.type !== "select" || !["plan", "accept-edits"].every(id => option.values.some(value => value.id === id)) ? option : {
-    ...option,
-    label: "Mode",
-    value: option.value === "plan" ? "plan" : "accept-edits",
-    values: [
-      { id: "accept-edits", label: "Build", description: "Implement the task using the selected permission policy." },
-      { id: "plan", label: "Plan", description: "Research and plan before implementation. Not enforced read-only access." },
-    ],
-  });
+// BB exposes native modes through /plan and the permission picker.
+function hideNativeMode(options: NonNullable<AvailableModel["sessionOptions"]>) {
+  return options.filter(option => !(option?.id === "mode" && option.type === "select"));
 }
 
 export function presentModeControls(line: string): string {
@@ -23,17 +15,22 @@ export function presentModeControls(line: string): string {
 
 export function presentModeControlMessage(message: any): boolean {
   let modified = false;
-  if (Array.isArray(message?.result?.models)) {
-    for (const model of [...message.result.models, ...(Array.isArray(message.result.selectedOnlyModels) ? message.result.selectedOnlyModels : [])]) {
+  for (const catalog of [message?.result?.models, message?.result?.selectedOnlyModels]) {
+    if (!Array.isArray(catalog)) continue;
+    for (const model of catalog) {
       if (Array.isArray(model?.sessionOptions)) {
-        model.sessionOptions = workModes(model.sessionOptions);
+        const options = hideNativeMode(model.sessionOptions);
+        if (options.length === model.sessionOptions.length) continue;
+        model.sessionOptions = options;
         modified = true;
       }
     }
   }
   for (const delta of Array.isArray(message?.params?.deltas) ? message.params.deltas : []) {
     if (delta?.kind === "extension.state" && delta.extensionKind === "bb/session-options" && Array.isArray(delta.payload?.options)) {
-      delta.payload.options = workModes(delta.payload.options);
+      const options = hideNativeMode(delta.payload.options);
+      if (options.length === delta.payload.options.length) continue;
+      delta.payload.options = options;
       modified = true;
     }
   }

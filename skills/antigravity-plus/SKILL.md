@@ -1,6 +1,6 @@
 ---
 name: antigravity-plus
-description: Spawn, configure, or troubleshoot Antigravity Provider + (antigravity-plus) threads in BB, including models, reasoning levels (low, medium, high, xhigh, max), Swarm board, quota windows, Build/Plan work modes, tip forking, manual compaction, permissions, and sign-in.
+description: Spawn, configure, and troubleshoot Antigravity Provider + (antigravity-plus) threads in BB. Covers models, reasoning, /plan, Auto permissions, question cards, Swarm, quota windows, tip forking, compaction, and sign-in.
 ---
 
 # Antigravity Provider +
@@ -11,7 +11,7 @@ Threads on `antigravity-plus` run the locally installed Antigravity CLI (`agy ac
 
 `antigravity-plus` caches CLI-discovered models per host (`models.scope: "host"`) and exposes per-model reasoning efforts (`low`, `medium`, `high`, `xhigh`, `max`, depending on the model). Fixed-effort models (such as `gpt-oss-120b-medium`) report `supportedReasoningEfforts: []`.
 
-- Plain `bb provider models antigravity-plus` prints only the model table and `sessionOptions` (`mode`), omitting reasoning levels. Always pass `--json` when inspecting reasoning support:
+- Pass `--json` to inspect per-model reasoning support:
 
 ```sh
 bb provider models antigravity-plus --environment "$BB_ENVIRONMENT_ID" --json
@@ -25,10 +25,11 @@ bb thread spawn --project "$BB_PROJECT_ID" --provider antigravity-plus --model g
 
 ## Work modes and permissions
 
-Work mode and permission mode are separate controls:
-
-- **Work mode (`--option mode=<accept-edits|plan>`).** `accept-edits` (**Build**, default) implements tasks under the active permission policy. `plan` (**Plan**) researches and outlines before editing (behavioral guidance, not enforced read-only access).
-- **Permission mode (`--permission-mode <accept-edits|full>`).** `accept-edits` runs workspace edits natively and handles other ACP prompts according to `acceptEditsApproval` (`ask`, `auto-in-sandbox`, or `auto-all`). `full` lets BB's shared bridge auto-approve every ACP request, including out-of-sandbox commands. `auto` is unsupported by BB's shared ACP bridge.
+- **Plan.** Use `/plan` in the composer or pass `--plan` to `bb thread spawn`. Native Plan takes precedence over Auto and guides the agent to research and outline before editing. Plan does not enforce read-only access.
+- **Accept edits (`--permission-mode accept-edits`).** Workspace edits run natively. Other requests use `acceptEditsApproval`.
+- **Auto (`--permission-mode auto`).** Antigravity reviews its own tool calls. You receive escalation prompts in BB. If the session lacks Auto, BB warns once per thread and uses Accept edits with user review.
+- **Full access (`--permission-mode full`).** BB auto-approves ACP requests, including out-of-sandbox commands.
+- **Questions.** BB shows `ask_question` as a card with choices and free text.
 
 ## Swarms in BB
 
@@ -40,7 +41,9 @@ Start a multi-agent swarm with `/swarm`. Antigravity supports pinning different 
 
 ## Requirements and settings
 
-- `agy` 1.5.0+ (`1.5.14+` recommended for `/compact`) must be installed on the target host (`agy --version`, `agy acp --help`).
+- Install `agy 1.5.0+` on the target host. Run `agy --version` to check it.
+- Auto requires `agy 1.5.4+`, account rollout, and the OS terminal sandbox. Enable the CLI sandbox in plugin settings if needed.
+- Manual `/compact` requires `agy 1.5.14+`. Native `ask_question` cards require `agy 1.5.18+`.
 - Sign in on the target host with `agy acp --login`.
 - Plugin settings (`Settings -> Installed plugins -> Antigravity Provider +`):
   - `autoOpenSwarmBoard` (default `true`): open the **Swarm** side-panel tab once when `/swarm` starts on a thread.
