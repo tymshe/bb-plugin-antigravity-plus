@@ -56,7 +56,13 @@ export function jsonlOutput(transformLines: (line: string) => string[]) {
   const decoder = new StringDecoder("utf8");
   let pending = "";
   const emit = (stream: Transform, line: string, trailingNewline: boolean) => {
-    const lines = transformLines(line);
+    let lines: string[];
+    try {
+      lines = transformLines(line);
+    } catch (error) {
+      process.stderr.write(`Antigravity bridge output transform failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      lines = [line];
+    }
     for (const out of lines) {
       stream.push(trailingNewline ? `${out}\n` : out);
     }

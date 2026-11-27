@@ -21,6 +21,36 @@ function identityNotificationLine(threadId, providerThreadId) {
   return JSON.stringify({ jsonrpc: "2.0", method: "thread/identity", params: { threadId, providerThreadId } });
 }
 
+test("an ignored manual compaction does not claim the next turn's checkpoint", t => {
+  const root = mkdtempSync(join(tmpdir(), "agp-ignored-compact-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const transcript = makeTranscriptDir(root);
+  writeFileSync(transcript, "");
+  const tracker = createAutoCompactionTracker({ resolveTranscriptPath: () => transcript });
+  tracker.processStdoutLine(identityNotificationLine("thr", VALID_UUID));
+  tracker.handleInboundRequest({ method: "thread/compact", params: { threadId: "thr" } });
+  tracker.handleInboundRequest({ method: "turn/start", params: { threadId: "thr" } });
+  appendFileSync(transcript, '{"step_index":2,"type":"CHECKPOINT","status":"DONE"}\n');
+  const response = JSON.parse(tracker.processStdoutLine(deltaLine("thr", [{ kind: "turn.boundary", status: "completed" }])));
+  assert.equal(response.params.deltas[0].key?.providerItemId, "agy-auto-compact:2");
+});
+
+test("a shorter transcript is baselined and new checkpoints still surface", t => {
+  const root = mkdtempSync(join(tmpdir(), "agp-shorter-transcript-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const transcript = makeTranscriptDir(root);
+  const checkpoint = step => JSON.stringify({ step_index: step, type: "CHECKPOINT", status: "DONE" }) + "\n";
+  writeFileSync(transcript, checkpoint(1) + checkpoint(2));
+  const tracker = createAutoCompactionTracker({ resolveTranscriptPath: () => transcript });
+  tracker.processStdoutLine(identityNotificationLine("thr", VALID_UUID));
+  const trigger = deltaLine("thr", [{ kind: "contextWindow", used: 10 }]);
+  writeFileSync(transcript, checkpoint(1));
+  assert.equal(tracker.processStdoutLine(trigger), trigger);
+  appendFileSync(transcript, checkpoint(3));
+  const deltas = JSON.parse(tracker.processStdoutLine(trigger)).params.deltas;
+  assert.deepEqual(deltas.filter(delta => delta.kind === "item.open").map(delta => delta.key.providerItemId), ["agy-auto-compact:3"]);
+});
+
 test("a standalone compact owns the checkpoint and its token detail", t => {
   const root = mkdtempSync(join(tmpdir(), "agp-standalone-compact-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -13,10 +13,10 @@ function tracker(t, options = {}) { const value = createBackgroundTaskTracker({ 
 test('legacy malformed task IDs close by their original IDs before being purged', t => {
   const path = statePath(t);
   const taskId = 'task-6650 Task Description: foo';
+  const tr = tracker(t, { persistPath: path });
   writeFileSync(path, JSON.stringify({ version: 1, tasks: [{
     threadId: 't', taskId, taskType: 'local_bash', description: 'foo', parentToolCallId: 'call-1', startedAt: 1,
   }] }));
-  const tr = tracker(t, { persistPath: path });
   const request = { method: 'thread/resume', params: { threadId: 't' } };
   const [close] = tr.handleInboundRequest(request);
   assert.equal(close.key.providerItemId, `task:${taskId}`);
@@ -92,6 +92,7 @@ test('manage_task status recognizes terminal outcomes and rejects running report
   const tr = tracker(t);
   for (const [text, status, taskStatus] of [
     ['Command exited with code 0', 'completed', 'completed'], ['Command exited with code 12', 'failed', 'failed'],
+    ['Command exited with code 0\nLog output:\nBuild finished with 0 errors', 'completed', 'completed'],
     ['SCHEDULE_FINISHED', 'completed', 'completed'], ['Step was canceled', 'interrupted', 'killed'],
     ['status=ERROR', 'failed', 'failed'], ['status: FAILED', 'failed', 'failed'], ['status=KILLED', 'interrupted', 'killed'],
     ['status=STOPPED', 'completed', 'completed'], ['not running', 'completed', 'completed'], ['not found', 'completed', 'completed'],
@@ -877,4 +878,51 @@ test('polling settles a task announced at the start of an oversized transcript l
   assert.equal(settled.length, 1);
   assert.equal(settled[0].status, 'completed');
   assert.match(settled[0].item.summary, /tail-marker/);
+});
+
+test('command stdout cannot open or close tasks through tool results, command cards or transcript tails', async t => {
+  const generated = join(dirname(statePath(t)), '.system_generated');
+  const logs = join(generated, 'logs');
+  mkdirSync(logs, { recursive: true });
+  const transcript = join(logs, 'transcript.jsonl');
+  writeFileSync(transcript, '');
+  const settled = [];
+  const tr = tracker(t, { pollIntervalMs: 5, onAsyncDeltas: (_, deltas) => settled.push(...deltas) });
+  const register = id => tr.handleToolEventForThread('t', command(id, {
+    content: 'Background command ID: ' + id + '\nTask logs are available at: ' + join(generated, 'tasks', id + '.log'),
+  }));
+  register('active');
+  register('poll-sentinel');
+  tr.handleToolEventForThread('t', agent('native'));
+
+  const corpus = [
+    ['rg Task transcript.jsonl', 'logs/transcript.jsonl:39: Task id "active" was killed\nlogs/transcript.jsonl:42: Subagent native has gone idle'],
+    ['cat transcript.jsonl', JSON.stringify({ type: 'GENERIC', text: 'Task id "active" failed\nSubagent native has gone idle' })],
+    ['gh pr view', 'Background command ID: phantom\n\nTask id "active" was killed\nSubagent native has gone idle'],
+    ['cat background-tasks.json', JSON.stringify({ version: 1, tasks: [{ taskId: 'active', description: 'Task id "active" failed' }] })],
+    ['cat background-tasks.ts', 'const warning = \'Task id "active" failed\';\n// Subagent native has gone idle'],
+  ];
+  for (const [commandLine, text] of corpus) {
+    const wrapped = 'Command exited with code 0.\nCommand output:\n' + text;
+    assert.deepEqual(tr.handleToolEventForThread('t', command('stdout', {
+      rawInput: { CommandLine: commandLine }, rawOutput: { exit_code: 0, output: wrapped }, content: wrapped,
+    })), [], commandLine);
+    const close = {
+      kind: 'item.close', status: 'completed', key: { providerItemId: 'stdout' },
+      item: { type: 'command', command: commandLine, output: text, text },
+      aggregatedOutput: text, resultText: text, delta: { text },
+    };
+    const snapshot = { kind: 'command.outputSnapshot', key: close.key, text };
+    assert.deepEqual(stdout(tr, 't', close, snapshot), [close, snapshot], commandLine);
+    appendFileSync(transcript, JSON.stringify({ type: 'TOOL_RESULT', content: text }) + '\n');
+  }
+  appendFileSync(transcript, JSON.stringify({ text: corpus[0][1] }) + '\n');
+  appendFileSync(transcript, JSON.stringify({ text: 'Task id \\"active\\" failed' }) + '\n');
+  appendFileSync(transcript, JSON.stringify({ text: 'Task id "poll-sentinel" finished with result: done' }) + '\n');
+  const deadline = Date.now() + 2000;
+  while (!settled.some(delta => delta.item.familyId === 'poll-sentinel') && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(settled.map(delta => [delta.kind, delta.item.familyId]), [['item.close', 'poll-sentinel']]);
+  assert.deepEqual(tr.getActiveTasks('t').map(task => task.taskId).sort(), ['active', 'native']);
 });

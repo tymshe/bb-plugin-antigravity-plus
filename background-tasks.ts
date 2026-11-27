@@ -3,8 +3,9 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import {
-  extractEventOutputText, inferAntigravityToolName, isValidBackgroundTaskId, normalizeFileUri, parseAntigravityCommandOutput,
-  parseBackgroundCommandOutput, structuredCommandExitCode,
+  commandOutputText, extractEventOutputText, inferAntigravityToolName, isValidBackgroundTaskId, normalizeFileUri, parseAntigravityCommandOutput,
+  classifyManageTaskStatus, CLI_CANCELLATION, containsTaskToken, parseBackgroundCommandOutput,
+  parseSubagentList, parseTaskAnnouncements, structuredCommandExitCode, subagentConversationId,
 } from './dialect.ts';
 
 export { normalizeFileUri };
@@ -61,7 +62,6 @@ export interface SilentTurnInjectionDelta {
 }
 export type TrackerDelta = BackgroundTaskDelta | SilentTurnInjectionDelta;
 const TERMINAL_TOOL_STATUS = /^(?:completed|failed|cancell?ed)$/i;
-const CLI_CANCELLATION = /Tool execution was canceled|Step was canceled|was canceled with result/i;
 // After this many consecutive silent turns (failed empty-output command, no agent text),
 // the injected message escalates to "command execution appears broken in this session".
 export const SILENT_TURN_ESCALATION_THRESHOLD = 2;
@@ -84,10 +84,6 @@ export function extractToolOutputText(event: RecordedToolEvent): string {
   return [extract(event.content), extract(event.rawOutput)].filter(Boolean).join('\n');
 }
 const first = (...values: unknown[]): string => values.find(v => typeof v === 'string' && v.trim())?.toString().trim() ?? '';
-function containsTaskToken(text: string, token: string): boolean {
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![A-Za-z0-9_/-])${escaped}(?![A-Za-z0-9_/-])`).test(text);
-}
 function mergeToolEvent(previous: RecordedToolEvent | undefined, event: RecordedToolEvent): RecordedToolEvent {
   return {
     ...previous, ...event,
@@ -395,17 +391,8 @@ export function createBackgroundTaskTracker(options: {
     return results;
   }
   function inspectTextForCompletions(thread: string, text: string): BackgroundTaskDelta[] {
-    const results: BackgroundTaskDelta[] = [];
-    // Bound each result at the next announcement so failures cannot spill into another task.
-    const announcements = [...text.matchAll(/Task id "([^"]+)" (finished with result:|was canceled|was killed|terminated|failed)/gi)];
-    announcements.forEach((match, i) => {
-      const result = text.slice(match.index! + match[0].length, announcements[i + 1]?.index ?? text.length);
-      const failed = match[2].toLowerCase() === 'failed' || /Command exited with code ([1-9]\d*)|Encountered error/i.test(result);
-      const killed = /was canceled|was killed|terminated/i.test(match[2]) || CLI_CANCELLATION.test(result);
-      results.push(...settle(thread, match[1], killed ? 'interrupted' : failed ? 'failed' : 'completed', killed ? 'killed' : failed ? 'failed' : 'completed', result.trim(), 'local_bash'));
-    });
-    for (const match of text.matchAll(/Subagent ([^\s"]+) has gone idle/gi)) results.push(...settle(thread, match[1], 'completed', 'completed', undefined, 'local_subagent'));
-    return results;
+    return parseTaskAnnouncements(text).flatMap(({ id, type, status, summary }) =>
+      settle(thread, id, status, status === 'interrupted' ? 'killed' : status, summary, type));
   }
   function poll() {
     for (const [thread, paths] of watchers) for (const [path, state] of paths) {
@@ -429,15 +416,30 @@ export function createBackgroundTaskTracker(options: {
       } catch { /* The CLI may not have created the transcript yet. */ }
       finally { if (fd !== undefined) closeSync(fd); }
       if (text) {
-        // Transcript records encode message text as JSON strings.
-        text = text.split('\n').map(line => {
-          let decoded = boundTranscriptLine(line);
+        const deltas = text.split('\n').flatMap(line => {
+          const bounded = boundTranscriptLine(line);
+          let message: string;
           try {
-            decoded = extractToolOutputText({ toolCallId: '', rawOutput: JSON.parse(decoded) });
-          } catch { /* A truncated line still carries its completion marker. */ }
-          return decoded.replace(/\\"/g, '"');
-        }).join('\n');
-        const deltas = inspectTextForCompletions(thread, text);
+            const record: unknown = JSON.parse(bounded);
+            if (typeof record === 'string') {
+              message = record;
+            } else {
+              if (!record || typeof record !== 'object') return [];
+              const isToolOutput = ['type', 'role', 'source'].some(field => {
+                const value: unknown = Reflect.get(record, field);
+                return typeof value === 'string' && /^(?:tool|command)(?:$|[_./-])/i.test(value);
+              });
+              if (isToolOutput) return [];
+              const fields = ['text', 'content', 'message'].map(key => Reflect.get(record, key));
+              message = extractToolOutputText({ toolCallId: '', content: fields });
+            }
+          } catch {
+            message = bounded.startsWith('{') && bounded.includes(' … ')
+              ? bounded.replace(/^\{\s*"[^"]+"\s*:\s*"/, '').replace(/\\"/g, '"')
+              : bounded;
+          }
+          return inspectTextForCompletions(thread, message);
+        });
         if (deltas.length) options.onAsyncDeltas?.(thread, deltas);
       }
     }
@@ -459,18 +461,15 @@ export function createBackgroundTaskTracker(options: {
     const name = (inferred && /^(run_command|schedule|invoke_subagent|manage_task|manage_subagents)$/.test(inferred) ? inferred : undefined)
       ?? [event.title, event.kind].find(v => /^(run_command|schedule|invoke_subagent|manage_task|manage_subagents)$/.test(v ?? '')) ?? '';
     const command = name === 'run_command' || name === 'schedule';
-    const text = command ? extractEventOutputText(event) : extractToolOutputText(event);
+    const text = command ? commandOutputText(event) : extractToolOutputText(event);
     const action = String(input.Action ?? '').toLowerCase();
     const results: BackgroundTaskDelta[] = [];
     if (name === 'manage_task') {
       const id = first(input.TaskId);
       if (action === 'kill' && id) return settle(thread, id, 'interrupted', 'killed', text, 'local_bash');
-      const canceled = CLI_CANCELLATION.test(text) || /cancel/i.test(event.status ?? '');
-      if (action === 'status' && id && canceled) return settle(thread, id, 'interrupted', 'killed', text, 'local_bash');
-      if (action === 'status' && id && !/Step is still running|status\s*[:=]\s*RUNNING/i.test(text) && /Command exited with code \d+|SCHEDULE_FINISHED|status\s*[:=]\s*(?:DONE|CANCELED|ERROR|COMPLETED|FAILED|KILLED|STOPPED)|not running|not found|unknown task|finished with result/i.test(text)) {
-        const failed = /Command exited with code [1-9]\d*|ERROR|FAILED/i.test(text);
-        const killed = /CANCELED|KILLED|interrupted/i.test(text);
-        return settle(thread, id, killed ? 'interrupted' : failed ? 'failed' : 'completed', killed ? 'killed' : failed ? 'failed' : 'completed', text, 'local_bash');
+      if (action === 'status' && id) {
+        const status = classifyManageTaskStatus(text, event.rawOutput);
+        if (status) return settle(thread, id, status, status === 'interrupted' ? 'killed' : status, text, 'local_bash');
       }
       if (action === 'list' && /No running tasks|\| Start Time \| Task ID \| Tool \| Description \|/i.test(text)) {
         for (const task of getActiveTasks(thread)) {
@@ -480,22 +479,16 @@ export function createBackgroundTaskTracker(options: {
       }
     }
     if (name === 'manage_subagents') {
-      const empty = /no active (?:direct )?subagents/i.test(text) || /^\s*\[\s*\]\s*$/.test(text)
-        || (Array.isArray(event.rawOutput) && event.rawOutput.length === 0);
+      const isFinished = parseSubagentList(event.rawOutput, text);
       for (const task of getActiveTasks(thread)) {
         if (task.taskType !== 'local_subagent') continue;
         const kill = action === 'kill_all' || (action === 'kill' && Array.isArray(input.ConversationIds) && input.ConversationIds.includes(task.taskId));
-        const line = text.split('\n').find(line => containsTaskToken(line, task.taskId));
-        if (kill || (action === 'list' && (empty || (line && /\bidle\b|\bdone\b|\bcompleted\b|\bkilled\b|\bstopped\b/i.test(line))))) results.push(...settle(thread, task.taskId, kill ? 'interrupted' : 'completed', kill ? 'killed' : 'completed', text, task.taskType));
+        if (kill || (action === 'list' && isFinished(task.taskId))) results.push(...settle(thread, task.taskId, kill ? 'interrupted' : 'completed', kill ? 'killed' : 'completed', text, task.taskType));
       }
     }
     const agent = name === 'invoke_subagent';
-    const raw = event.rawOutput as Record<string, unknown> | undefined;
-    const spawnedId = /\bSubagent spawned\b/i.test(text) ? /\bconversationId:[ \t]*([^\s,]+)/i.exec(text)?.[1] : undefined;
     const parsedCommand = command ? parseBackgroundCommandOutput(event, text) : null;
-    const id = agent ? [raw?.conversationId, /"conversationId"\s*:\s*"([^"]+)"/.exec(text)?.[1], spawnedId]
-      .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      : (parsedCommand?.taskId ?? '');
+    const id = agent ? subagentConversationId(event.rawOutput, text) : parsedCommand?.taskId;
     if (!id) return results;
     const title = /^(run_command|schedule|invoke_subagent)$/.test(event.title ?? '') ? '' : event.title;
     const outputFile = parsedCommand?.outputFile ?? '';
@@ -642,6 +635,7 @@ export function createBackgroundTaskTracker(options: {
           });
         }
       }
+      const commandOutput = entry?.item?.type === 'command' || entry?.kind === 'command.outputSnapshot';
       if (entry?.kind === 'item.textDelta' && typeof entry.text === 'string') {
         const combined = (streamBuffers.get(params.threadId) ?? '') + entry.text;
         streamBuffers.set(
@@ -652,7 +646,7 @@ export function createBackgroundTaskTracker(options: {
         if (entry.text.trim() && entry.channel !== 'reasoningText' && entry.channel !== 'reasoningSummary') {
           silentState(params.threadId).agentText = true;
         }
-      } else if (typeof entry?.text === 'string') {
+      } else if (!commandOutput && typeof entry?.text === 'string') {
         extra.push(...inspectTextForCompletions(params.threadId, entry.text));
       }
       if (entry?.kind === 'item.textClose' || entry?.kind === 'turn.boundary') {
@@ -679,6 +673,7 @@ export function createBackgroundTaskTracker(options: {
         if (typeof injectedText === 'string') ordered.push(...silentTurnInjection(injectedText));
       }
       ordered.push(entry);
+      if (commandOutput) continue;
       for (const text of [entry?.resultText, entry?.aggregatedOutput, entry?.message, entry?.delta?.text, entry?.item?.output, entry?.item?.text]) {
         if (typeof text === 'string') extra.push(...inspectTextForCompletions(params.threadId, text));
       }

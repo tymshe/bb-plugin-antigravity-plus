@@ -113,31 +113,6 @@ export const CANONICAL_ANTIGRAVITY_TOOLS: ReadonlySet<string> = new Set([
   "ask_question",
 ]);
 
-// Configuration
-let commandDescriptionsEnabled = true;
-
-export function getCommandDescriptionsEnabled(): boolean {
-  return commandDescriptionsEnabled;
-}
-
-export function setCommandDescriptionsEnabled(enabled: boolean): void {
-  commandDescriptionsEnabled = enabled;
-}
-
-export function applyThreadCommandDescriptions(
-  line: string,
-  enabledByThread: ReadonlyMap<string, boolean>
-): string {
-  let message: any;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return line;
-  }
-
-  return applyThreadCommandDescriptionMessage(message, enabledByThread) ? JSON.stringify(message) : line;
-}
-
 export function applyThreadCommandDescriptionMessage(
   message: any,
   enabledByThread: ReadonlyMap<string, boolean>,
@@ -151,7 +126,7 @@ export function applyThreadCommandDescriptionMessage(
     return false;
   }
 
-  const enabled = enabledByThread.get(params.threadId) ?? getCommandDescriptionsEnabled();
+  const enabled = enabledByThread.get(params.threadId) ?? true;
   let modified = false;
 
   for (const delta of params.deltas) {
@@ -202,20 +177,13 @@ export function extractEventOutputText(event: { content?: unknown; rawOutput?: u
 type ToolUpdateListener = (event: AcpToolUpdateEvent) => void;
 const toolUpdateListeners = new Set<ToolUpdateListener>();
 const lastNotifiedSteps = new Map<string, { stepKey: string; hasInput: boolean; hasTitle: boolean; outputText: string }>();
-const normalizedExitCodes = new WeakMap< object, number >();
+const normalizedCommandResults = new WeakMap<AcpToolUpdateEvent, { exitCode: number | null; cleanOutput: string }>();
 
 export function onToolUpdate(listener: ToolUpdateListener): () => void {
   toolUpdateListeners.add(listener);
   return () => {
     toolUpdateListeners.delete(listener);
   };
-}
-
-export function setToolUpdateListener(listener: ToolUpdateListener | null): void {
-  toolUpdateListeners.clear();
-  if (listener) {
-    toolUpdateListeners.add(listener);
-  }
 }
 
 function notifyToolUpdate(event: AcpToolUpdateEvent): void {
@@ -516,6 +484,62 @@ export function parseBackgroundCommandOutput(
   };
 }
 
+export const CLI_CANCELLATION = /Tool execution was canceled|Step was canceled|was canceled with result/i;
+type TaskOutcome = 'completed' | 'failed' | 'interrupted';
+
+export function parseTaskAnnouncements(text: string): {
+  id: string;
+  type: 'local_bash' | 'local_subagent';
+  status: TaskOutcome;
+  summary?: string;
+}[] {
+  const markers = [...text.matchAll(/^(?:Task id "([^"\r\n]+)" (finished with result:|was canceled|was killed|terminated|failed)|Subagent ([^\s"]+) has gone idle)/gim)];
+  return markers.map((match, index) => {
+    if (match[3]) return { id: match[3], type: 'local_subagent', status: 'completed' };
+    const summary = text.slice(match.index + match[0].length, markers[index + 1]?.index ?? text.length).trim();
+    const canceled = /was canceled|was killed|terminated/i.test(match[2]) || CLI_CANCELLATION.test(summary);
+    const failed = match[2].toLowerCase() === 'failed' || /Command exited with code ([1-9]\d*)|Encountered error/i.test(summary);
+    return { id: match[1], type: 'local_bash', status: canceled ? 'interrupted' : failed ? 'failed' : 'completed', summary };
+  });
+}
+
+export function classifyManageTaskStatus(text: string, rawOutput?: unknown): TaskOutcome | null {
+  const statusText = text.split(/^Log output:/im, 1)[0];
+  if (CLI_CANCELLATION.test(statusText)) return 'interrupted';
+  if (/Step is still running|status\s*[:=]\s*RUNNING\b/i.test(statusText)) return null;
+  const textualCode = /Command exited with code (-?\d+)\b/i.exec(statusText);
+  const exitCode = structuredCommandExitCode(rawOutput) ?? (textualCode ? Number(textualCode[1]) : null);
+  if (exitCode !== null) return exitCode === 0 ? 'completed' : 'failed';
+  if (/status\s*[:=]\s*(?:CANCELED|KILLED)\b/i.test(statusText)) return 'interrupted';
+  if (/status\s*[:=]\s*(?:ERROR|FAILED)\b/i.test(statusText)) return 'failed';
+  if (/SCHEDULE_FINISHED|status\s*[:=]\s*(?:DONE|COMPLETED|STOPPED)\b|not running|not found|unknown task|finished with result/i.test(statusText)) return 'completed';
+  return null;
+}
+
+export function subagentConversationId(rawOutput: unknown, text: string): string | undefined {
+  const structured = rawOutput && typeof rawOutput === 'object' && 'conversationId' in rawOutput
+    ? rawOutput.conversationId : undefined;
+  const spawnedId = /\bSubagent spawned\b/i.test(text) ? /\bconversationId:[ \t]*([^\s,]+)/i.exec(text)?.[1] : undefined;
+  return [structured, /"conversationId"\s*:\s*"([^"]+)"/.exec(text)?.[1], spawnedId]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+export function containsTaskToken(text: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9_/-])${escaped}(?![A-Za-z0-9_/-])`).test(text);
+}
+
+export function parseSubagentList(rawOutput: unknown, text: string): (id: string) => boolean {
+  const empty = /no active (?:direct )?subagents/i.test(text) || /^\s*\[\s*\]\s*$/.test(text)
+    || (Array.isArray(rawOutput) && rawOutput.length === 0);
+  const lines = text.split('\n');
+  return (id: string): boolean => {
+    if (empty) return true;
+    const line = lines.find(line => containsTaskToken(line, id));
+    return line !== undefined && /\b(?:idle|done|completed|killed|stopped)\b/i.test(line);
+  };
+}
+
 export function parseAntigravityCommandOutput(rawText: string): {
   cleanOutput: string;
   exitCode: number | null;
@@ -601,91 +625,43 @@ export function normalizeCommandEvent(event: AcpToolUpdateEvent): AcpToolUpdateE
     }
   }
 
-  // Normalize rawOutput if string or object
-  let detectedExitCode: number | null = null;
-  if (typeof normalized.rawOutput === "string") {
-    const parsed = parseAntigravityCommandOutput(normalized.rawOutput);
-    if (parsed.exitCode !== null) detectedExitCode = parsed.exitCode;
-    normalized.rawOutput = parsed.cleanOutput;
-  } else if (normalized.rawOutput && typeof normalized.rawOutput === "object") {
-    const obj = { ...(normalized.rawOutput as Record<string, unknown>) };
-    if (typeof obj.output === "string") {
-      const parsed = parseAntigravityCommandOutput(obj.output);
-      if (parsed.exitCode !== null) detectedExitCode = parsed.exitCode;
-      obj.output = parsed.cleanOutput;
-    }
-    if (typeof obj.stdout === "string") {
-      const parsed = parseAntigravityCommandOutput(obj.stdout);
-      if (parsed.exitCode !== null) detectedExitCode = parsed.exitCode;
-      obj.stdout = parsed.cleanOutput;
-    }
-    normalized.rawOutput = obj;
+  const contentText = extractEventOutputText({ content: event.content });
+  const result = readCommandOutput(event, contentText);
+  const { cleanOutput } = result;
+  if (contentText) {
+    normalized.content = [{ type: "content", content: { type: "text", text: cleanOutput } }];
+  } else if (typeof event.rawOutput === "string") {
+    normalized.rawOutput = cleanOutput;
+  } else if (event.rawOutput && typeof event.rawOutput === "object" && cleanOutput) {
+    normalized.rawOutput = { ...event.rawOutput, stdout: cleanOutput, stderr: undefined };
   }
-
-  // Normalize content blocks if present
-  if (Array.isArray(normalized.content)) {
-    normalized.content = normalized.content.map((block: any) => {
-      if (!block || typeof block !== "object") return block;
-      if (block.type === "content" && block.content && typeof block.content === "object" && typeof block.content.text === "string") {
-        const parsed = parseAntigravityCommandOutput(block.content.text);
-        if (parsed.exitCode !== null) detectedExitCode = parsed.exitCode;
-        return {
-          ...block,
-          content: {
-            ...block.content,
-            text: parsed.cleanOutput,
-          },
-        };
-      }
-      if (block.type === "text" && typeof block.text === "string") {
-        const parsed = parseAntigravityCommandOutput(block.text);
-        if (parsed.exitCode !== null) detectedExitCode = parsed.exitCode;
-        return {
-          ...block,
-          text: parsed.cleanOutput,
-        };
-      }
-      return block;
-    });
-  }
-
-  if (detectedExitCode !== null) {
-    normalizedExitCodes.set(normalized, detectedExitCode);
-  }
-
+  normalizedCommandResults.set(normalized, result);
   return normalized;
 }
 
-export function commandResult(event: AcpToolUpdateEvent): { exitCode?: number | null } | null {
-  if (!event || typeof event !== "object") return null;
+export function commandOutputText(
+  event: { rawOutput?: unknown; content?: unknown },
+  contentText = extractEventOutputText({ content: event.content }),
+): string {
+  const raw = event.rawOutput;
+  return contentText ||
+    (raw && typeof raw === "object" && "output" in raw && typeof raw.output === "string"
+      ? raw.output
+      : extractEventOutputText({ rawOutput: raw }));
+}
 
-  const cachedExitCode = normalizedExitCodes.get(event);
-  if (cachedExitCode !== undefined) {
-    return { exitCode: cachedExitCode };
-  }
+function readCommandOutput(event: AcpToolUpdateEvent, contentText?: string) {
+  const { cleanOutput, exitCode } = parseAntigravityCommandOutput(commandOutputText(event, contentText));
+  return { cleanOutput, exitCode: structuredCommandExitCode(event.rawOutput) ?? exitCode };
+}
 
-  if (event.rawOutput && typeof event.rawOutput === "object") {
-    const raw = event.rawOutput as Record<string, unknown>;
-    const code =
-      typeof raw.exitCode === "number"
-        ? raw.exitCode
-        : typeof raw.exit_code === "number"
-          ? raw.exit_code
-          : null;
-    if (code !== null) {
-      return { exitCode: code };
-    }
-  }
-
-  const outputText = extractEventOutputText(event);
-  if (outputText) {
-    const parsed = parseAntigravityCommandOutput(outputText);
-    if (parsed.exitCode !== null) {
-      return { exitCode: parsed.exitCode };
-    }
-  }
-
-  return null;
+function commandResult(event: AcpToolUpdateEvent) {
+  const { exitCode, cleanOutput } = normalizedCommandResults.get(event) ?? readCommandOutput(event);
+  if (exitCode === null && !cleanOutput) return undefined;
+  return {
+    ...(exitCode === null ? {} : { exitCode }),
+    ...(cleanOutput ? { output: cleanOutput } : {}),
+  };
 }
 
 // Tool Classification
@@ -714,11 +690,10 @@ export function classifyToolCall(event: AcpToolUpdateEvent): AcpDialectToolClass
             : undefined;
       const bypassSandbox = rawInput.BypassSandbox === true;
 
-      const outputText = extractEventOutputText(event);
+      const outputText = commandOutputText(event);
       const isBackgrounded = parseBackgroundCommandOutput(event, outputText) !== null;
 
       const useToolSummary =
-        getCommandDescriptionsEnabled() &&
         typeof toolSummary === "string" &&
         toolSummary.trim().length > 0 &&
         toolSummary.trim() !== commandLine?.trim();
@@ -784,17 +759,7 @@ export function classifyToolCall(event: AcpToolUpdateEvent): AcpDialectToolClass
           ? rawInput.Prompt.trim()
           : undefined;
 
-      const outputText = extractEventOutputText(event);
-      const convMatch =
-        outputText.match(/"conversationId"\s*:\s*"([^"]+)"/) ??
-        (/\bSubagent spawned\b/i.test(outputText)
-          ? outputText.match(/\bconversationId:[ \t]*([^\s,]+)/i)
-          : null);
-      const conversationId =
-        convMatch?.[1] ??
-        (event.rawOutput && typeof event.rawOutput === "object" && typeof (event.rawOutput as Record<string, unknown>).conversationId === "string"
-          ? ((event.rawOutput as Record<string, unknown>).conversationId as string)
-          : undefined);
+      const conversationId = subagentConversationId(event.rawOutput, extractEventOutputText(event));
 
       const label = role || typeName || "Subagent";
 
@@ -1265,18 +1230,17 @@ export function classifyToolCall(event: AcpToolUpdateEvent): AcpDialectToolClass
 export const antigravityAcpDialect: AcpDialect = {
   id: ANTIGRAVITY_ACP_DIALECT_ID,
   toolIdentity: ((event: AcpToolUpdateEvent) => toolIdentity(event) ?? undefined) as any,
-  classifyToolCall: ((event: AcpToolUpdateEvent) => classifyToolCall(event) ?? undefined) as any,
-  normalizeCommandEvent,
-  commandResult: ((event: AcpToolUpdateEvent) => {
-    const res = commandResult(event);
-    if (!res) return undefined;
-    const text = extractEventOutputText(event);
-    const clean = text ? parseAntigravityCommandOutput(text).cleanOutput : undefined;
-    return {
-      ...res,
-      ...(clean ? { output: clean } : {}),
-    };
+  classifyToolCall: ((event: AcpToolUpdateEvent) => {
+    const classified = classifyToolCall(event);
+    // The bridge adds a name to timeline events before classification. Approval events
+    // lack that name and need a tool item so the permission request carries the native ID.
+    if (classified?.item?.type === "delegation" && event.name === undefined && event.status === undefined) {
+      return { item: { type: "tool", tool: "invoke_subagent", args: event.rawInput }, presentation: classified.presentation };
+    }
+    return classified ?? undefined;
   }) as any,
+  normalizeCommandEvent,
+  commandResult,
 };
 
 let dialectRegistered = false;

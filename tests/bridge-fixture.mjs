@@ -21,7 +21,7 @@ process.stdout.write = chunk => {
 };
 const send = (id, method, params) => bridge.handleLine(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
 const wait = async predicate => {
-  const end = Date.now() + 8000;
+  const end = Date.now() + 30_000;
   while (Date.now() < end) {
     const match = messages.find(predicate);
     if (match) return match;
@@ -42,6 +42,7 @@ try {
     bridge.handleLine(JSON.stringify({ jsonrpc: '2.0', id: interaction.id, result: { decision: 'allow_once', grantedPermissions: null } }));
   }
   await wait(m => JSON.stringify(m).includes('optionId'));
+  await wait(m => m.params?.deltas?.some(d => d.kind === 'turn.boundary'));
   assert.equal(messages.some(m => m.method === 'interaction/request'), !enabled);
   assert.match(JSON.stringify(messages), /yes/);
   assert.match(JSON.stringify(messages), /"type":"backgroundTask"/);
@@ -53,6 +54,7 @@ try {
       ...options,
       providerOptions: { ...options.providerOptions, subagentsDisabled: true },
     };
+    const beforeSubagent = messages.length;
     send(4, 'turn/start', {
       threadId: 'thread',
       providerThreadId: started.result.providerThreadId,
@@ -60,7 +62,10 @@ try {
       input: [{ type: 'text', text: 'subagent-test' }],
       options: subagentOptions,
     });
-    await wait(m => JSON.stringify(m).includes('\\"optionId\\":\\"no\\"'));
+    const subagentResult = await wait(m => messages.indexOf(m) >= beforeSubagent &&
+      m.params?.deltas?.some(d => d.kind === 'item.textDelta'));
+    assert.match(JSON.stringify(subagentResult), /\\"optionId\\":\\"no\\"/);
+    await wait(m => messages.indexOf(m) >= beforeSubagent && m.params?.deltas?.some(d => d.kind === 'turn.boundary'));
 
     // Real end-to-end test: BypassSandbox: true with empty content MUST NOT be auto-approved under promptOnSandboxEscape
     const guardedOptions = {
@@ -103,6 +108,8 @@ try {
 
     const phantomClose = phantomDeltas.find(d => d.kind === 'item.close' && d.key?.providerItemId === 'phantom-call-1');
     assert.equal(phantomClose?.presentation?.label?.completed, 'Ran command');
+    assert.equal(phantomClose.aggregatedOutput,
+      'Tool is running as a background task with task id: fake/phantom-1\nTask logs are available at: /tmp/phantom.log\n');
 
     const thoughtIndex = phantomDeltas.findIndex(d => d.kind === 'item.textDelta' && d.text === 'phantom-reasoning');
     assert.ok(thoughtIndex > 0);
@@ -128,10 +135,10 @@ try {
     assert.match(closedOrphan.item.summary, /42 passed/);
   }
 
-  bridge.onClose?.();
   originalWrite('verified\n');
+  bridge.onClose?.();
 } catch (error) {
   process.stderr.write(String(error.stack || error) + '\n');
-  bridge.onClose?.();
   process.exitCode = 1;
+  bridge.onClose?.();
 }

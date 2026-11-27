@@ -11,13 +11,9 @@ import {
   parseAntigravityCommandOutput,
   parseBackgroundCommandOutput,
   normalizeCommandEvent,
-  commandResult,
   classifyToolCall,
   onToolUpdate,
-  setToolUpdateListener,
-  getCommandDescriptionsEnabled,
-  setCommandDescriptionsEnabled,
-  applyThreadCommandDescriptions,
+  applyThreadCommandDescriptionMessage,
 } from '../dialect.ts';
 
 test('exports the correct dialect id and registers idempotently', () => {
@@ -350,29 +346,6 @@ test('onToolUpdate registers listener and deduplicates same step', () => {
   assert.equal(delivered.length, 3);
 });
 
-test('setToolUpdateListener sets single listener or clears', () => {
-  const delivered = [];
-  setToolUpdateListener(e => delivered.push(e.toolCallId));
-
-  toolIdentity({ toolCallId: 'set_1', sessionUpdate: 'tool_call' });
-  assert.deepEqual(delivered, ['set_1']);
-
-  // Setting null clears
-  setToolUpdateListener(null);
-  toolIdentity({ toolCallId: 'set_2', sessionUpdate: 'tool_call' });
-  assert.deepEqual(delivered, ['set_1']);
-});
-
-test('command descriptions enabled setting', () => {
-  assert.equal(getCommandDescriptionsEnabled(), true);
-
-  setCommandDescriptionsEnabled(false);
-  assert.equal(getCommandDescriptionsEnabled(), false);
-
-  setCommandDescriptionsEnabled(true);
-  assert.equal(getCommandDescriptionsEnabled(), true);
-});
-
 test('parseAntigravityCommandOutput extracts clean output, exit code, and background status', () => {
   // Successful command with wrapper
   const raw1 = `Created At: 2026-11-09T00:39:55+02:00
@@ -467,49 +440,34 @@ All tests passed!
   assert.equal(normalized.rawOutput, 'All tests passed!\n');
 });
 
-test('commandResult extracts exit code from rawOutput object or output text', () => {
-  // From rawOutput object
-  assert.deepEqual(
-    commandResult({
-      toolCallId: 'cr_1',
-      sessionUpdate: 'tool_call',
-      rawOutput: { exitCode: 0, stdout: 'ok' },
-    }),
-    { exitCode: 0 }
-  );
-
-  assert.deepEqual(
-    commandResult({
-      toolCallId: 'cr_2',
-      sessionUpdate: 'tool_call',
-      rawOutput: { exit_code: 2 },
-    }),
-    { exitCode: 2 }
-  );
-
-  // From output text
-  assert.deepEqual(
-    commandResult({
-      toolCallId: 'cr_3',
-      sessionUpdate: 'tool_call',
-      rawOutput: 'Command exited with code 1.\n\nCommand output:\nerror',
-    }),
-    { exitCode: 1 }
-  );
-
-  // When no exit code is present
-  assert.equal(
-    commandResult({
-      toolCallId: 'cr_4',
-      sessionUpdate: 'tool_call',
-      rawOutput: 'still running...',
-    }),
-    null
-  );
+test('command result reads each supported output form', () => {
+  const cases = [
+    [{ exitCode: 0, stdout: 'ok' }, { exitCode: 0, output: 'ok' }],
+    [{ exit_code: 2 }, { exitCode: 2 }],
+    [{ output: 'Command output:\nOutput:\nreal line' }, { output: 'Output:\nreal line' }],
+    ['Command exited with code 1.\n\nCommand output:\nerror', { exitCode: 1, output: 'error' }],
+    ['still running...', { output: 'still running...' }],
+  ];
+  for (const [rawOutput, result] of cases) {
+    const event = { toolCallId: 'cr', sessionUpdate: 'tool_call', rawOutput };
+    assert.deepEqual(antigravityAcpDialect.commandResult(antigravityAcpDialect.normalizeCommandEvent(event)), result);
+  }
 });
 
-test('classifyToolCall: run_command with descriptions enabled and disabled', () => {
-  setCommandDescriptionsEnabled(true);
+test('command result keeps literal stdout headers and uses content only once', () => {
+  for (const output of ['Output:\nreal line\n', 'Created At: 2026-11-22T12:46:19Z\nreal line\n']) {
+    const text = 'Command exited with code 0.\nCommand output:\n' + output;
+    const event = {
+      toolCallId: 'literal-output', sessionUpdate: 'tool_call_update',
+      content: [{ type: 'content', content: { type: 'text', text } }],
+      rawOutput: { output: text, exit_code: 0 },
+    };
+    const normalized = antigravityAcpDialect.normalizeCommandEvent(event);
+    assert.deepEqual(antigravityAcpDialect.commandResult(normalized), { exitCode: 0, output });
+  }
+});
+
+test('classifyToolCall: run_command with descriptions', () => {
   const event1 = {
     toolCallId: 'cmd_1',
     sessionUpdate: 'tool_call',
@@ -554,15 +512,7 @@ test('classifyToolCall: run_command with descriptions enabled and disabled', () 
     { label: 'Outside of sandbox', tone: 'destructive' },
   ]);
 
-  // When command descriptions are disabled
-  setCommandDescriptionsEnabled(false);
-  const classified3 = classifyToolCall(event1);
-  assert.equal(classified3.presentation.title, 'git status');
-  assert.equal(classified3.presentation.detail, undefined);
-  assert.equal(classified3.presentation.subtitle, undefined);
-
   // When toolSummary duplicates the exact command line, do not repeat it as subtitle/detail
-  setCommandDescriptionsEnabled(true);
   const eventDup = {
     toolCallId: 'cmd_dup',
     sessionUpdate: 'tool_call',
@@ -577,7 +527,6 @@ test('classifyToolCall: run_command with descriptions enabled and disabled', () 
   assert.equal(classifiedDup.presentation.subtitle, undefined);
 
   // Backgrounded command
-  setCommandDescriptionsEnabled(true);
   const event4 = {
     toolCallId: 'cmd_4',
     sessionUpdate: 'tool_call',
@@ -937,59 +886,22 @@ test('classifyToolCall: invoke_subagent extracts childRef from plain-text conver
   assert.equal(classified.label, 'Explorer');
 });
 
-test('applyThreadCommandDescriptions isolates commandDescriptionsEnabled per threadId across concurrent threads', () => {
-  const enabledByThread = new Map([
-    ['thread-enabled', true],
-    ['thread-disabled', false],
-  ]);
-
-  const createDeltaLine = (threadId, command, summary) =>
-    JSON.stringify({
-      jsonrpc: '2.0',
+test('command descriptions follow each thread setting', () => {
+  const settings = new Map([['thread-enabled', true], ['thread-disabled', false]]);
+  for (const threadId of ['thread-enabled', 'thread-disabled', 'thread-unknown']) {
+    const command = 'git status';
+    const presentation = { title: 'Check git status', detail: command, subtitle: command };
+    const message = {
       method: 'thread/delta',
-      params: {
-        threadId,
-        deltas: [
-          {
-            kind: 'item.open',
-            item: { type: 'command', command },
-            presentation: {
-              title: summary,
-              detail: command,
-              subtitle: command,
-            },
-          },
-        ],
-      },
-    });
-
-  // Thread with enabled = true retains summary title and subtitle
-  const lineEnabled = createDeltaLine('thread-enabled', 'git status', 'Check git status');
-  const resultEnabled = applyThreadCommandDescriptions(lineEnabled, enabledByThread);
-  assert.equal(resultEnabled, lineEnabled);
-  const parsedEnabled = JSON.parse(resultEnabled);
-  assert.equal(parsedEnabled.params.deltas[0].presentation.title, 'Check git status');
-  assert.equal(parsedEnabled.params.deltas[0].presentation.detail, 'git status');
-  assert.equal(parsedEnabled.params.deltas[0].presentation.subtitle, 'git status');
-
-  // Thread with enabled = false replaces summary title with command line and deletes subtitle/detail
-  const lineDisabled = createDeltaLine('thread-disabled', 'git status', 'Check git status');
-  const resultDisabled = applyThreadCommandDescriptions(lineDisabled, enabledByThread);
-  assert.notEqual(resultDisabled, lineDisabled);
-  const parsedDisabled = JSON.parse(resultDisabled);
-  assert.equal(parsedDisabled.params.deltas[0].presentation.title, 'git status');
-  assert.equal(parsedDisabled.params.deltas[0].presentation.detail, undefined);
-  assert.equal(parsedDisabled.params.deltas[0].presentation.subtitle, undefined);
-
-  // Fallback to getCommandDescriptionsEnabled() when thread not in map
-  setCommandDescriptionsEnabled(true);
-  const lineFallback = createDeltaLine('thread-unknown', 'npm test', 'Run tests');
-  assert.equal(applyThreadCommandDescriptions(lineFallback, enabledByThread), lineFallback);
-
-  // Non-delta messages and invalid JSON pass through unchanged
-  assert.equal(applyThreadCommandDescriptions('not json', enabledByThread), 'not json');
-  const otherMessage = JSON.stringify({ method: 'session/update' });
-  assert.equal(applyThreadCommandDescriptions(otherMessage, enabledByThread), otherMessage);
+      params: { threadId, deltas: [{ kind: 'item.open', item: { type: 'command', command }, presentation }] },
+    };
+    const disabled = threadId === 'thread-disabled';
+    assert.equal(applyThreadCommandDescriptionMessage(message, settings), disabled);
+    assert.deepEqual(presentation, disabled
+      ? { title: command }
+      : { title: 'Check git status', detail: command, subtitle: command });
+  }
+  assert.equal(applyThreadCommandDescriptionMessage({ method: 'session/update' }, settings), false);
 });
 
 test('classifyToolCall formats Antigravity swarm tools cleanly', () => {

@@ -173,14 +173,15 @@ test('the host module runs as the proxy process in front of the agent', async ()
   const host = fileURLToPath(new URL('../host.ts', import.meta.url));
   const agent = fileURLToPath(new URL('./fake-acp-recorder.mjs', import.meta.url));
   const child = spawn(process.execPath, [host, AGY_ACP_PROXY_FLAG, process.execPath, agent], {
-    env: { ...process.env, RECORD_FILE: record, [AGY_ACP_PROXY_STATE_DIR_ENV]: join(dir, 'state') },
+    env: { ...process.env, RECORD_FILE: record, ELECTRON_RUN_AS_NODE: '1', [AGY_ACP_PROXY_STATE_DIR_ENV]: join(dir, 'state') },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   try {
     const replies = new Map();
     createInterface({ input: child.stdout }).on('line', l => { const m = JSON.parse(l); replies.get(m.id)?.(m); });
     const call = (id, method, params) => new Promise(resolve => { replies.set(id, resolve); child.stdin.write(line({ id, method, params }) + '\n'); });
-    await call(1, 'initialize', { protocolVersion: 1 });
+    const initialized = await call(1, 'initialize', { protocolVersion: 1 });
+    assert.equal(initialized.result._meta.electronRunAsNode, null);
     await call(2, 'session/new', { cwd: dir, mcpServers: [] });
     const result = await call(3, 'session/prompt', { sessionId: 'rec-session', prompt: [{ type: 'text', text: BLOCK }, { type: 'text', text: 'hi' }] });
     assert.equal(result.result.stopReason, 'end_turn');
@@ -350,24 +351,32 @@ test('reports a chat reply to /compact as a failed compaction, and leaves real c
   assert.equal(ordinary.toClient.some(m => m.params?.update?.sessionUpdate === 'compaction_update'), false);
 });
 
-test('prunes stored instructions only for old files whose conversation is gone', async () => {
+test('prunes only old instructions for deleted conversations in the current profile', async () => {
   const { pruneInstructionStore } = await import('../acp-proxy.ts');
   const { mkdirSync, utimesSync, writeFileSync } = await import('node:fs');
   const root = mkdtempSync(join(tmpdir(), 'agy-proxy-prune-'));
   const store = join(root, 'store');
-  const conversations = join(root, 'conversations');
+  const profileA = join(root, 'profile-a');
+  const profileB = join(root, 'profile-b');
+  const conversations = join(profileA, 'conversations');
   mkdirSync(store);
-  mkdirSync(conversations);
+  mkdirSync(conversations, { recursive: true });
   try {
     const old = Date.now() / 1000 - 3 * 24 * 3600;
-    for (const id of ['gone-old', 'kept-old', 'gone-new']) writeFileSync(join(store, `${id}.json`), '{}');
+    for (const id of ['gone-old', 'kept-old', 'gone-new']) createInstructionStore(store, profileA).set(id, 'rules');
+    createInstructionStore(store, profileB).set('other-profile', 'rules B');
+    writeFileSync(join(store, 'legacy.json'), JSON.stringify({ version: 1, instructions: 'old rules' }));
     writeFileSync(join(store, 'notes.txt'), 'x');
     utimesSync(join(store, 'gone-old.json'), old, old);
     utimesSync(join(store, 'kept-old.json'), old, old);
+    utimesSync(join(store, 'legacy.json'), old, old);
+    utimesSync(join(store, 'other-profile.json'), old, old);
     writeFileSync(join(conversations, 'kept-old.db'), '');
-    assert.deepEqual(pruneInstructionStore(store, conversations), ['gone-old']);
-    assert.deepEqual(readdirSync(store).sort(), ['gone-new.json', 'kept-old.json', 'notes.txt']);
-    assert.deepEqual(pruneInstructionStore(join(root, 'missing'), conversations), []);
+    assert.deepEqual(pruneInstructionStore(store, profileA), ['gone-old']);
+    assert.deepEqual(readdirSync(store).sort(), ['gone-new.json', 'kept-old.json', 'legacy.json', 'notes.txt', 'other-profile.json']);
+    assert.deepEqual(pruneInstructionStore(store, profileB), ['other-profile']);
+    assert.equal(createInstructionStore(store).get('legacy'), 'old rules');
+    assert.deepEqual(pruneInstructionStore(join(root, 'missing'), profileA), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -384,4 +393,46 @@ test('passes session/fork through natively when agy itself advertises fork suppo
   assert.equal(proxyForkCalls, 0);
   assert.equal(h.toAgent.at(-1).method, 'session/fork');
   assert.equal(h.toAgent.at(-1).id, 2);
+});
+
+test('translates agy executor-busy prompt error into retryable BB session_busy error', () => {
+  const h = harness();
+  h.proxy.fromClient(line({ id: 10, method: 'session/prompt', params: { sessionId: 's1', prompt: [{ type: 'text', text: 'follow-up' }] } }));
+  h.proxy.fromAgent(line({
+    id: 10,
+    error: {
+      code: -32603,
+      message: 'Failed to send user message: executor has not processed the previous input yet',
+      data: { details: 'executor busy' },
+    },
+  }));
+  assert.equal(h.toClient.length, 1);
+  assert.equal(h.toClient[0].error.code, -32003);
+  assert.equal(h.toClient[0].error.data.reason, 'session_busy');
+  assert.equal(h.toClient[0].error.data.details, 'executor busy');
+  assert.match(h.toClient[0].error.message, /executor has not processed the previous input yet/);
+
+  // Unrelated prompt errors and non-prompt errors pass through unchanged.
+  h.proxy.fromClient(line({ id: 11, method: 'session/prompt', params: { sessionId: 's1', prompt: [{ type: 'text', text: 'bad' }] } }));
+  h.proxy.fromAgent(line({ id: 11, error: { code: -32602, message: 'Invalid prompt' } }));
+  assert.equal(h.toClient[1].error.code, -32602);
+  assert.equal(h.toClient[1].error.data, undefined);
+
+  h.proxy.fromClient(line({ id: 12, method: 'session/resume', params: { sessionId: 's1' } }));
+  h.proxy.fromAgent(line({ id: 12, error: { code: -32603, message: 'executor has not processed the previous input yet' } }));
+  assert.equal(h.toClient[2].error.code, -32603);
+});
+
+test('preserves text and object details on retryable busy errors', () => {
+  const message = 'executor has not processed the previous input yet';
+  const h = harness();
+  for (const [data, expected] of [
+    ['original detail', { details: 'original detail', reason: 'session_busy' }],
+    [{ origin: 'agy' }, { origin: 'agy', details: message, reason: 'session_busy' }],
+    [undefined, { details: message, reason: 'session_busy' }],
+  ]) {
+    h.proxy.fromClient(line({ id: 1, method: 'session/prompt', params: { sessionId: 's1' } }));
+    h.proxy.fromAgent(line({ id: 1, error: { code: -32603, message, data } }));
+    assert.deepEqual(h.toClient.at(-1).error.data, expected);
+  }
 });

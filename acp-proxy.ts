@@ -19,6 +19,9 @@
  * model answers instead (agy passed "/compact" to it, as on a new session, with thoughts, tool
  * calls or chat text), the proxy adds a failed `compaction_update`, so bb shows a failure.
  *
+ * Fourth behaviour. The proxy maps an executor-busy prompt error to the ACP session_busy
+ * code and reason so the shared bridge can retry the prompt.
+ *
  * Design notes:
  * - The host artifact doubles as the proxy executable: host.ts rewrites the agy launch
  *   spec to `node <host.mjs> --agy-acp-proxy <agy> acp ...` on the agent host, so nothing
@@ -35,8 +38,8 @@
  *
  * Gotchas:
  * - Verified against agy 1.5.14: a live session/resume keeps model, thought_level and mode.
- * - The instruction store keeps one small file per agy conversation; each proxy start prunes files
- *   whose conversation no longer exists (and that are over a day old), so reopened threads keep theirs.
+ * - Each proxy start prunes instruction files for its own app data directory. A file is
+ *   eligible once it is a day old and its conversation is gone.
  * - The proxy never reads stdin until `run` is called, so importing this module starts nothing.
  * - agy's stderr is held until agy first answers (at most 5 s), so when a pre-1.5.0 CLI fails
  *   (it has no `acp` subcommand) the proxy's "run agy update" explanation leads the error bb shows.
@@ -55,6 +58,23 @@ export const AGY_ACP_PROXY_SWITCH_ENV = "BB_AGY_ACP_PROXY";
 const INSTRUCTIONS_OPEN = "<system_instructions>";
 const INSTRUCTIONS_CLOSE = "</system_instructions>";
 const INTERNAL_ID_PREFIX = "bb-agy-acp-proxy:";
+const ACP_SESSION_BUSY_ERROR_CODE = -32003;
+const EXECUTOR_BUSY_PATTERN = /executor has not processed the previous input yet/i;
+
+function isExecutorBusyError(record: unknown): boolean {
+  if (!record || typeof record !== "object") return false;
+  if ("message" in record && typeof record.message === "string" && EXECUTOR_BUSY_PATTERN.test(record.message)) return true;
+  if (!("data" in record)) return false;
+  if (typeof record.data === "string" && EXECUTOR_BUSY_PATTERN.test(record.data)) return true;
+  if (record.data && typeof record.data === "object") {
+    try {
+      return EXECUTOR_BUSY_PATTERN.test(JSON.stringify(record.data));
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 /** `agy acp` first shipped in 1.5.0. */
 export const MIN_AGY_ACP_VERSION = [1, 5, 0] as const;
@@ -68,7 +88,11 @@ export interface InstructionStore {
 }
 
 /** Keeps instructions in memory and, when `dir` is set, in one JSON file per session. */
-export function createInstructionStore(dir: string | undefined, log: (message: string) => void = () => {}): InstructionStore {
+export function createInstructionStore(
+  dir: string | undefined,
+  appDataDir = resolveAgyAppDataDir([]),
+  log: (message: string) => void = () => {},
+): InstructionStore {
   const memory = new Map<string, string>();
   const fileFor = (sessionId: string) => (dir && SESSION_ID_PATTERN.test(sessionId) ? join(dir, `${sessionId}.json`) : undefined);
   return {
@@ -92,7 +116,7 @@ export function createInstructionStore(dir: string | undefined, log: (message: s
       const temp = `${file}.${process.pid}.tmp`;
       try {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
-        writeFileSync(temp, `${JSON.stringify({ version: 1, instructions })}\n`, { mode: 0o600 });
+        writeFileSync(temp, `${JSON.stringify({ version: 1, instructions, appDataDir })}\n`, { mode: 0o600 });
         renameSync(temp, file);
       } catch (error) {
         try { unlinkSync(temp); } catch { /* Best effort. */ }
@@ -106,7 +130,7 @@ export function createInstructionStore(dir: string | undefined, log: (message: s
  * Deletes stored instructions whose agy conversation is gone. Files younger than `minAgeMs` are
  * kept, so a session whose database is still being created is never touched. Best effort.
  */
-export function pruneInstructionStore(dir: string, conversationsDir: string, now = Date.now(), minAgeMs = 24 * 60 * 60 * 1000): string[] {
+export function pruneInstructionStore(dir: string, appDataDir: string, now = Date.now(), minAgeMs = 24 * 60 * 60 * 1000): string[] {
   const removed: string[] = [];
   let names: string[];
   try {
@@ -114,6 +138,7 @@ export function pruneInstructionStore(dir: string, conversationsDir: string, now
   } catch {
     return removed;
   }
+  const conversationsDir = join(appDataDir, "conversations");
   for (const name of names) {
     const sessionId = name.endsWith(".json") ? name.slice(0, -5) : undefined;
     if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) continue;
@@ -121,6 +146,8 @@ export function pruneInstructionStore(dir: string, conversationsDir: string, now
     try {
       if (now - statSync(file).mtimeMs < minAgeMs) continue;
       if (existsSync(join(conversationsDir, `${sessionId}.db`))) continue;
+      const record = JSON.parse(readFileSync(file, "utf8"));
+      if (record?.version !== 1 || record.appDataDir !== appDataDir) continue;
       rmSync(file, { force: true });
       removed.push(sessionId);
     } catch {}
@@ -166,6 +193,7 @@ export class AgyAcpProxy {
   private readonly initializeRequests = new Set<unknown>();
   private nativeFork = false;
   private readonly compactions = new Map<unknown, { sessionId: string; text: string; modelActed: boolean }>();
+  private readonly promptRequests = new Set<unknown>();
   private readonly internal = new Map<string, (response: Json) => void>();
   private readonly queue: string[] = [];
   private blocked = 0;
@@ -199,6 +227,7 @@ export class AgyAcpProxy {
         case "session/resume":
           return this.options.toAgent(this.reapplyInstructions(message, params) ?? line);
         case "session/prompt":
+          this.promptRequests.add(message.id);
           if (isCompactPrompt(params) && typeof params.sessionId === "string") {
             this.compactions.set(message.id, { sessionId: params.sessionId, text: "", modelActed: false });
           }
@@ -218,6 +247,7 @@ export class AgyAcpProxy {
         this.internal.delete(message.id);
         return callback(message);
       }
+      const isPromptResponse = this.promptRequests.delete(message.id);
       const compaction = this.compactions.get(message.id);
       if (compaction) {
         this.compactions.delete(message.id);
@@ -235,6 +265,23 @@ export class AgyAcpProxy {
             },
           }));
         }
+      }
+      if (isPromptResponse && message.error && isExecutorBusyError(message.error)) {
+        const { data, message: errorMessage } = message.error;
+        const existingData = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+        const details = typeof data === "string" ? data : existingData.details ?? errorMessage;
+        return this.options.toClient(JSON.stringify({
+          ...message,
+          error: {
+            ...message.error,
+            code: ACP_SESSION_BUSY_ERROR_CODE,
+            data: {
+              ...existingData,
+              ...(typeof details === "string" ? { details } : {}),
+              reason: "session_busy",
+            },
+          },
+        }));
       }
       if (this.initializeRequests.delete(message.id) && message.result) {
         if (message.result?.agentCapabilities?.sessionCapabilities?.fork !== undefined) {
@@ -423,8 +470,10 @@ export async function runAgyAcpProxy(argv: string[]): Promise<void> {
   if (!Database && !disabled) log("node:sqlite is unavailable in this Node.js; session/fork is not offered");
   const appDataDir = resolveAgyAppDataDir(args);
   const stateDir = process.env[AGY_ACP_PROXY_STATE_DIR_ENV] || undefined;
-  if (stateDir && !disabled) setImmediate(() => pruneInstructionStore(stateDir, join(appDataDir, "conversations")));
-  const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env, shell: false });
+  if (stateDir && !disabled) setImmediate(() => pruneInstructionStore(stateDir, appDataDir));
+  const childEnv = { ...process.env };
+  delete childEnv.ELECTRON_RUN_AS_NODE;
+  const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv, shell: false });
   // Hold agy's stderr until it answers (or briefly), so an outdated-CLI explanation can lead the error bb shows.
   let answered = false;
   let held: Buffer[] | undefined = [];
@@ -441,7 +490,7 @@ export async function runAgyAcpProxy(argv: string[]): Promise<void> {
   const proxy = disabled ? { fromClient: toAgent, fromAgent: toClient } : new AgyAcpProxy({
     toAgent,
     toClient,
-    store: createInstructionStore(stateDir, log),
+    store: createInstructionStore(stateDir, appDataDir, log),
     ...(Database ? { fork: (sourceId: string) => forkAgyConversation(appDataDir, sourceId, Database, undefined, log) } : {}),
     log,
   });
@@ -461,7 +510,7 @@ export async function runAgyAcpProxy(argv: string[]): Promise<void> {
   });
   child.on("close", (code, signal) => {
     if (!answered && code !== 0 && held) {
-      const outdated = describeOutdatedAgy(command, () => execFileSync(command, ["--version"], { encoding: "utf8", timeout: 10_000, env: process.env }));
+      const outdated = describeOutdatedAgy(command, () => execFileSync(command, ["--version"], { encoding: "utf8", timeout: 10_000, env: childEnv }));
       if (outdated) process.stderr.write(`${outdated}\n`);
     }
     releaseStderr();

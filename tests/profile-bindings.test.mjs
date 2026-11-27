@@ -43,7 +43,7 @@ async function withHost(env, run) {
   child.stderr.on('data', chunk => { stderr += chunk; });
   createInterface({ input: child.stdout }).on('line', line => messages.push(JSON.parse(line)));
   async function waitFor(predicate) {
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline && child.exitCode === null) {
       const message = messages.find(predicate);
       if (message) return message;
@@ -192,4 +192,53 @@ test('real bridge verifies standalone compact on end_turn and still surfaces lat
     const automatic = await turn('auto-checkpoint', 'creq_456789abcd');
     assert.ok(automatic.some(delta => delta.kind === 'item.close' && delta.key?.providerItemId === 'agy-auto-compact:3'));
   });
+});
+
+test('the shared bridge retries an agy executor busy response and completes the turn', { skip: process.platform === 'win32' }, async t => {
+  const { root, env } = setup(t);
+  const record = join(root, 'received.jsonl');
+  const params = sessionParams(root);
+  await withHost({ ...env, AGY_TEST_BUSY_ONCE: '1', RECORD_FILE: record }, async ({ call, waitFor }) => {
+    const { result } = await call('thread/start', params);
+    assert.ok(result?.providerThreadId);
+    assert.ok((await call('turn/start', {
+      ...params, providerThreadId: result.providerThreadId, clientRequestId: 'creq_23456789ab',
+      input: [{ type: 'text', text: 'retry this prompt' }],
+    })).result);
+    const ended = await waitFor(message => message.params?.deltas?.some(delta => delta.kind === 'turn.boundary'));
+    assert.equal(ended.params.deltas.find(delta => delta.kind === 'turn.boundary').status, 'completed');
+    const prompts = readFileSync(record, 'utf8').trim().split('\n').map(JSON.parse)
+      .filter(message => message.method === 'session/prompt');
+    assert.equal(prompts.length, 2);
+    assert.deepEqual(prompts[1].params, prompts[0].params);
+  });
+});
+
+test('the Swarm host handler reads the bound session profile after a legacy binding is resumed', { skip: process.platform === 'win32' }, async t => {
+  const { root, env, stateDir } = setup(t);
+  const appDataDir = join(root, 'bound-app-data');
+  const params = sessionParams(root);
+  params.options.envVars = { BB_ANTIGRAVITY_APP_DATA_DIR: appDataDir };
+  let providerThreadId;
+  await withHost(env, async ({ call }) => {
+    providerThreadId = (await call('thread/start', params)).result?.providerThreadId;
+    assert.ok(providerThreadId);
+  });
+  const path = join(stateDir, 'profile-bindings.json');
+  const state = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(state.bindings[0].appDataDir, appDataDir);
+  delete state.bindings[0].appDataDir;
+  writeFileSync(path, JSON.stringify(state));
+  await withHost(env, async ({ call }) => {
+    assert.equal((await call('thread/resume', { ...params, providerThreadId })).result?.providerThreadId, providerThreadId);
+  });
+  const swarm = join(appDataDir, 'brain', providerThreadId, '.system_generated', 'swarm');
+  mkdirSync(swarm, { recursive: true });
+  writeFileSync(join(swarm, 'members.json'), JSON.stringify({ title: 'Bound profile board', members: [] }));
+  const snapshot = JSON.parse(execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e',
+    'const { default: host } = await import("./host.ts"); console.log(JSON.stringify(await host.handlers.readSwarmBoard({ providerThreadId: process.argv[1] })))',
+    providerThreadId,
+  ], { env: { ...env, BB_ANTIGRAVITY_APP_DATA_DIR: join(root, 'other-profile') }, encoding: 'utf8', timeout: 30_000 }));
+  assert.equal(snapshot.exists, true);
+  assert.equal(snapshot.title, 'Bound profile board');
 });

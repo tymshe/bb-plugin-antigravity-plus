@@ -9,8 +9,9 @@ This document defines the repeatable validation, release, and marketplace update
 1. **Typecheck, tests, and release gate:**
    - `npm ci --ignore-scripts`
    - `npm run check` (`tsc --noEmit`)
-   - `npm test` (unit tests across proxy, fork, dialect, background tasks, subagents, maintenance, usage, Swarm reader, and provider contract)
+   - `npm test` uses an isolated `HOME` at `$RUNNER_TEMP/antigravity-test-home`. CI fails if the tests create `.bb` there.
    - `npm run check:release` (`scripts/check-release.mjs`), which enforces:
+     - The SDK's `validatePluginProviderDeclaration` and `registerSettingDescriptors` accept the runtime provider declaration and settings.
      - Runtime setting keys in `server.ts` match `README.md`, `SECURITY.md`, and `skills/antigravity-plus/SKILL.md`, with no retired setting names left behind.
      - Display name, provider ID, version (`package.json` and `scripts/smoke.mjs`), repository URL, `LICENSE` author, `bb.description`, `keywords`, `bbMarketplace` (`category`, `secondaryCategories`, `screenshots`), and `assets/icon.svg` SHA-256 hash are valid and match `docs/marketplace-entry.template.json`.
      - `PLUGIN_OVERVIEW.md` stays at or under 4,000 characters, has no `# ` H1 title, no raw HTML, no tables, no images, HTTPS links only, zero em dashes, and zero banned marketplace buzzwords.
@@ -33,8 +34,15 @@ Run these steps locally on a machine with BB and a signed-in `agy` CLI:
    Update `version` in `package.json` (`scripts/smoke.mjs` reads `manifest.version` automatically), and update `range` in `docs/marketplace-entry.template.json` if crossing a major/minor floor.
 2. **Run the full local gate:**
    ```sh
-   bb plugin types --check . && npm run check && npm test && npm run build && npm run check:release && npm run smoke -- --modes
+   bb plugin types --check .
+   npm run check
+   ISO_HOME=$(mktemp -d) && env -u BB_ANTIGRAVITY_TASK_STATE_DIR HOME="$ISO_HOME" npm test && test ! -e "$ISO_HOME/.bb" && find "$ISO_HOME" -depth -delete
+   npm run build
+   npm run check:release
+   npm run smoke -- --modes --usage
+   git diff --check
    ```
+   The live `--usage` check parses `agy --version`, validates the quota response with the SDK schema, and requires an `ok` result with at least one window. It uses the signed-in profile on the agent host.
 3. **Install locally into BB and verify live surfaces:**
    ```sh
    bb plugin install --yes .

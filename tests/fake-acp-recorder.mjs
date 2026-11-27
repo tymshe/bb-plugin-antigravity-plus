@@ -11,15 +11,29 @@ const bridgeTest = Boolean(process.env.AGY_TEST_SPAWNS);
 const sessionId = bridgeTest ? '9a6a33d2-0afa-4caa-9e67-30de71f632d5' : 'rec-session';
 const appDataDir = resolveAgyAppDataDir(process.argv.slice(2));
 let stepIndex = 0;
+let prompts = 0;
 if (bridgeTest) appendFileSync(process.env.AGY_TEST_SPAWNS, appDataDir + '\n');
 
 createInterface({ input: process.stdin }).on('line', line => {
   if (process.env.RECORD_FILE) appendFileSync(process.env.RECORD_FILE, line + '\n');
   const m = JSON.parse(line);
-  if (m.method === 'initialize') send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  if (m.method === 'initialize') send({ jsonrpc: '2.0', id: m.id, result: {
+    protocolVersion: 1, agentCapabilities: { loadSession: true },
+    _meta: { electronRunAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null },
+  } });
   if (m.method === 'session/new') send({ jsonrpc: '2.0', id: m.id, result: { sessionId } });
   if (['session/resume', 'session/load', 'session/close'].includes(m.method)) send({ jsonrpc: '2.0', id: m.id, result: {} });
   if (m.method === 'session/prompt') {
+    if (process.env.AGY_TEST_BUSY_ONCE === '1') {
+      if (++prompts === 1) {
+        send({ jsonrpc: '2.0', id: m.id, error: {
+          code: -32603, message: 'executor has not processed the previous input yet',
+        } });
+      } else {
+        send({ jsonrpc: '2.0', id: m.id, result: { stopReason: 'end_turn' } });
+      }
+      return;
+    }
     if (bridgeTest && (++stepIndex === 1 || m.params.prompt.some(block => block.text === 'auto-checkpoint'))) {
       const path = join(appDataDir, 'brain', sessionId, '.system_generated', 'logs', 'transcript.jsonl');
       mkdirSync(dirname(path), { recursive: true });

@@ -213,18 +213,25 @@ test('responds to provider/usage JSON-RPC requests', async () => {
   try {
     const response = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('No usage response')), 5000);
-      process.stdout.write = chunk => {
-        clearTimeout(timer);
-        resolve(String(chunk));
-        return true;
+      process.stdout.write = function (chunk, ...args) {
+        if (typeof chunk === 'string') {
+          let parsed;
+          try { parsed = JSON.parse(chunk); } catch {}
+          if (parsed?.id === 42) {
+            clearTimeout(timer);
+            resolve(parsed);
+            return true;
+          }
+        }
+        return originalWrite.call(this, chunk, ...args);
       };
-        experimental_providerBridge.start();
+      experimental_providerBridge.start();
       experimental_providerBridge.handleLine(JSON.stringify({
           jsonrpc: '2.0', id: 42, method: 'provider/usage',
           params: { providerOptions: { acpLaunchSpec: { displayName: 'Missing', command: 'missing-antigravity-test-command', args: [], env: {} } } },
         }));
     });
-    const parsed = JSON.parse(await response);
+    const parsed = await response;
     assert.equal(parsed.jsonrpc, '2.0');
     assert.equal(parsed.id, 42);
     assert.deepEqual(providerUsageResultSchema.parse(parsed.result), { supported: true, usage: { status: 'not_installed' } });
@@ -317,6 +324,7 @@ test('evicts cached usage when the provider is removed', async () => {
 test('keeps healthy hosts visible and preserves cache when one host lookup fails', async () => {
   let handlers;
   let failHost2 = false;
+  let hostLookupError;
   let host2Collections = 0;
   const bb = {
     pluginId: 'antigravity-plus',
@@ -327,7 +335,10 @@ test('keeps healthy hosts visible and preserves cache when one host lookup fails
           { id: 'host_1', name: 'Healthy Mac', status: 'connected' },
           { id: 'host_2', name: 'Flaky Box', status: 'connected' },
         ],
-        get: async ({ hostId }) => ({ id: hostId, name: hostId, status: 'connected' }),
+        get: async ({ hostId }) => {
+          if (hostId === 'host_2' && hostLookupError) throw hostLookupError;
+          return { id: hostId, name: hostId, status: 'connected' };
+        },
       },
       providers: {
         list: async ({ hostId }) => {
@@ -349,7 +360,8 @@ test('keeps healthy hosts visible and preserves cache when one host lookup fails
 
   // Warm cache on host_2 while both hosts are healthy.
   const host2Id = JSON.stringify(['host_2', 'antigravity-plus']);
-  assert.equal((await getResource({ resourceId: host2Id, refresh: true })).usage.status, 'ok');
+  const cached = await getResource({ resourceId: host2Id, refresh: true });
+  assert.equal(cached.usage.status, 'ok');
   assert.equal(host2Collections, 1);
 
   // When host_2 fails provider inventory, host_1 remains visible and host_2 cache is not evicted.
@@ -357,9 +369,21 @@ test('keeps healthy hosts visible and preserves cache when one host lookup fails
   const degraded = await listResources({});
   assert.equal(degraded.resources.length, 1);
   assert.equal(degraded.resources[0].scope.hostId, 'host_1');
+  const unavailable = {
+    ...cached,
+    usage: { status: 'error', plan: null, accountEmail: null, planLabel: null, message: 'Usage could not be collected from this machine.' },
+  };
+  assert.deepEqual(await getResource({ resourceId: host2Id, refresh: true }), unavailable);
 
-  // Once host_2 recovers, cached observation is still served without an extra collection.
   failHost2 = false;
+  hostLookupError = new Error('host lookup unavailable');
+  assert.deepEqual(await getResource({ resourceId: host2Id, refresh: true }), unavailable);
+  hostLookupError = undefined;
   assert.equal((await getResource({ resourceId: host2Id, refresh: false })).usage.status, 'ok');
   assert.equal(host2Collections, 1);
+  hostLookupError = Object.assign(new Error('missing host'), { status: 404 });
+  await assert.rejects(getResource({ resourceId: host2Id, refresh: true }), /no longer exists/);
+  hostLookupError = undefined;
+  assert.equal((await getResource({ resourceId: host2Id, refresh: false })).usage.status, 'ok');
+  assert.equal(host2Collections, 2);
 });

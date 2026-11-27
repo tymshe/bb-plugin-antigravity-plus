@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerSettingDescriptors, validatePluginProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import plugin from "../server.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -38,6 +39,12 @@ await plugin({
 
 if (!registeredProvider) {
   fail("server.ts did not register a provider");
+}
+try {
+  if (registeredProvider) validatePluginProviderDeclaration(registeredProvider);
+  registerSettingDescriptors({}, definedSettings);
+} catch (error) {
+  fail(`SDK rejected the provider declaration or settings: ${error.message}`);
 }
 
 const settingKeys = Object.keys(definedSettings);

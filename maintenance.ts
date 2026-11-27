@@ -1,6 +1,5 @@
-import { execFile as nodeExecFile } from "node:child_process";
+import { experimental_execHostFile } from "@get-bb/plugin-sdk/process";
 import { existsSync } from "node:fs";
-import { promisify } from "node:util";
 import {
   experimental_downloadedInstallerCommand,
   experimental_installationVerification,
@@ -12,7 +11,6 @@ import { readAntigravityProviderUsage } from "./usage.ts";
 type AntigravityProviderUsageResult = Awaited<ReturnType<typeof readAntigravityProviderUsage>>;
 type SemverTuple = readonly [number, number, number];
 
-const execFileAsync = promisify(nodeExecFile);
 const UPDATE_CHECK_TIMEOUT_MS = 4_000;
 
 export const MINIMUM_SUPPORTED_AGY_VERSION = MIN_AGY_ACP_VERSION.join(".");
@@ -30,7 +28,7 @@ export interface MaintenanceProbeOptions {
   checkUpdates?: boolean;
   fetch?: typeof globalThis.fetch;
   resolveCommand?: (command: string, options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => string | null;
-  execFile?: (command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number }) => Promise<{ stdout: string; stderr: string }>;
+  execFile?: NonNullable<Parameters<typeof readAntigravityProviderUsage>[0]>["execFile"];
   checkUsage?: () => Promise<AntigravityProviderUsageResult>;
 }
 
@@ -161,7 +159,7 @@ export async function readAntigravityInstallationStatus(
   const requested = options.command || "agy";
   const env = options.env ?? process.env;
   const resolveCommand = options.resolveCommand ?? resolveAntigravityCommand;
-  const run = options.execFile ?? ((cmd, args, opts) => execFileAsync(cmd, args, { ...opts, encoding: "utf8" }));
+  const run = options.execFile ?? experimental_execHostFile;
   const shouldCheckUpdates = options.checkUpdates === true;
 
   const executablePath = requested === "agy"
@@ -300,7 +298,7 @@ export async function readAntigravityHealth(
           command: status.executablePath ?? options.command ?? "agy",
           cwd: options.cwd,
           env: options.env,
-          ...(options.execFile ? { execFile: options.execFile as any } : {}),
+          execFile: options.execFile,
         });
     const usage = usageResult.usage as { status?: string; accountEmail?: string | null; planLabel?: string | null } | undefined;
     if (usage?.status === "unauthenticated") {

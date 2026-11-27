@@ -11,7 +11,7 @@ import { interceptSubagentApprovalMessage, isSubagentApprovalForDisabledThread, 
 import { readSwarmBoard } from "./swarm-board.ts";
 import { swarmHostContract } from "./swarm-contract.ts";
 import { readAntigravityProviderUsage } from "./usage.ts";
-import { planAntigravityInstallationRun, readAntigravityHealth, readAntigravityInstallationStatus } from "./maintenance.ts";
+import { AGY_LOGIN_COMMAND, MINIMUM_SUPPORTED_AGY_VERSION, planAntigravityInstallationRun, readAntigravityHealth, readAntigravityInstallationStatus } from "./maintenance.ts";
 import { resolveAntigravityCommand, resolveAntigravityLaunchSpec } from "./cli.ts";
 import { AGY_ACP_PROXY_FLAG, runAgyAcpProxy } from "./acp-proxy.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -476,10 +476,11 @@ export const experimental_providerBridge = {
                 accountEmail: null,
                 planLabel: null,
                 installedVersion: null,
-                minimumSupportedVersion: "1.5.0",
+                minimumSupportedVersion: MINIMUM_SUPPORTED_AGY_VERSION,
                 canInstall: false,
                 canUpdate: false,
-                loginCommand: "agy acp --login",
+                loginCommand: AGY_LOGIN_COMMAND,
+                localLoginCommand: AGY_LOGIN_COMMAND,
               },
             },
           })}\n`);
@@ -531,7 +532,9 @@ export const experimental_providerBridge = {
 export default experimental_defineHostEntry({
   contract: swarmHostContract,
   handlers: {
-    readSwarmBoard: ({ providerThreadId }) => readSwarmBoard(providerThreadId),
+    readSwarmBoard: ({ providerThreadId }) => readSwarmBoard(providerThreadId, {
+      appDataDir: getProfileBindings().getAppDataDir(providerThreadId.trim()),
+    }),
   },
 });
 

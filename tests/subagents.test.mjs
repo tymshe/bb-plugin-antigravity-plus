@@ -77,3 +77,17 @@ test('recognizes dynamic titles and distinguishes approvals without a deny optio
   invalid.params.payload.availableDecisions = null;
   assert.equal(c.isSubagentApprovalForDisabledThread(invalid), false);
 });
+
+test('an MCP tool named in the approval keeps its own policy despite a matching title', () => {
+  const replies = [];
+  const c = createSubagentController({ replyToBridge: line => replies.push(line) });
+  c.rememberAndTransformRequest(request('thread/start', 'a', { providerOptions: { subagentsDisabled: true } }));
+  const presentation = { title: 'Send message' };
+  assert.equal(c.interceptSubagentApproval(JSON.stringify(approval('a', {
+    kind: 'tool_use', tool: 'mcp__slack__send_message', presentation,
+  }))), false);
+  assert.deepEqual(replies, []);
+  assert.equal(c.interceptSubagentApproval(JSON.stringify(approval('a', {
+    kind: 'tool_use', tool: '', presentation,
+  }))), true);
+});

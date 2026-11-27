@@ -23,7 +23,10 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --ignore-scripts
       - run: npm run check
-      - run: npm test
+      - name: Test with an isolated home
+        run: |
+          HOME="$RUNNER_TEMP/antigravity-test-home" npm test
+          test ! -e "$RUNNER_TEMP/antigravity-test-home/.bb"
       - run: npm run check:release
       - run: npm audit --audit-level=low
       - run: npm pack --dry-run --ignore-scripts

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { presentModeControls, modeControlOutput } from '../mode-controls.ts';
+import { presentModeControls, modeControlOutput, jsonlOutput } from '../mode-controls.ts';
 import { mapPromptMode } from '../prompt-mode.ts';
 
 const mode = { id: 'mode', type: 'select', label: 'Mode', value: 'default', values: [
@@ -46,6 +46,18 @@ test('transport transforms a trailing line without a newline', async () => {
   await new Promise(resolve => output.on('end', resolve));
   const result = JSON.parse(Buffer.concat(chunks).toString());
   assert.deepEqual(result.result.models[0].sessionOptions[0].values.map(v => v.label), ['Build', 'Plan']);
+});
+
+test('transport forwards a failed line and processes the next line', async () => {
+  const output = jsonlOutput(line => {
+    if (line === 'bad') throw new Error('test transform failure');
+    return [line.toUpperCase()];
+  });
+  const chunks = [];
+  output.on('data', chunk => chunks.push(chunk));
+  output.end('bad\ngood\n');
+  await new Promise(resolve => output.on('end', resolve));
+  assert.equal(Buffer.concat(chunks).toString(), 'bad\nGOOD\n');
 });
 
 test('Build exits a previous BB plan action', () => {

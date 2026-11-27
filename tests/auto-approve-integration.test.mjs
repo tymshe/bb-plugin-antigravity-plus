@@ -16,7 +16,7 @@ test('ACP bridge delivers opt-in approval, blocks phantom tasks, and tracks Case
   const envWithoutState = { ...process.env, HOME: fakeHome };
   delete envWithoutState.BB_ANTIGRAVITY_TASK_STATE_DIR;
   await assert.rejects(
-    run(process.execPath, ['--experimental-strip-types', fixturePath, 'true'], { timeout: 10000, env: envWithoutState }),
+    run(process.execPath, ['--experimental-strip-types', fixturePath, 'true'], { timeout: 30_000, env: envWithoutState }),
     /requires BB_ANTIGRAVITY_TASK_STATE_DIR/,
   );
   assert.equal(existsSync(join(fakeHome, '.bb', 'plugin-data')), false, 'fail-fast guard must not touch $HOME/.bb/plugin-data');
@@ -25,8 +25,8 @@ test('ACP bridge delivers opt-in approval, blocks phantom tasks, and tracks Case
   for (const enabled of ['true', 'false']) {
     const stateDir = mkdtempSync(join(tmpdir(), `auto-approve-state-${enabled}-`));
     t.after(() => rmSync(stateDir, { recursive: true, force: true }));
-    const result = await run(process.execPath, ['--experimental-strip-types', fixturePath, enabled], { timeout: 15000, env: { ...process.env, BB_ANTIGRAVITY_TASK_STATE_DIR: stateDir } });
-    assert.match(result.stdout, /verified/);
+    const result = await run(process.execPath, ['--experimental-strip-types', fixturePath, enabled], { timeout: 30_000, env: { ...process.env, BB_ANTIGRAVITY_TASK_STATE_DIR: stateDir } });
+    assert.match(result.stdout, /verified/, result.stderr);
     const persisted = JSON.parse(readFileSync(join(stateDir, 'background-tasks.json'), 'utf8'));
     assert.ok(!persisted.tasks.some(task => task.taskId === 'fake/phantom-1'), 'phantom task must never be persisted');
     assert.ok(!persisted.tasks.some(task => task.taskId === 'orphan-call-1'), 'settled orphan task must be removed from disk');

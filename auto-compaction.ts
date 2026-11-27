@@ -232,7 +232,8 @@ export function createAutoCompactionTracker(options?: AutoCompactionTrackerOptio
       fd = openSync(transcriptPath, "r");
       const size = fstatSync(fd).size;
       if (size < state.offset) {
-        state.offset = 0;
+        state.offset = size;
+        return [];
       }
       if (size <= state.offset) return [];
 
@@ -299,6 +300,12 @@ export function createAutoCompactionTracker(options?: AutoCompactionTrackerOptio
       if (typeof providerThreadId === "string") {
         bindProviderThread(state, providerThreadId);
       }
+      return;
+    }
+
+    if (method === "turn/start") {
+      const state = threads.get(threadId);
+      if (state?.manual?.open === null) state.manual = null;
       return;
     }
 

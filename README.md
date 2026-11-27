@@ -95,7 +95,7 @@ In the terminal CLI, `/swarm` prints a terminal-only `alt+s` hint. Inside BB, An
 - **Swarm side-panel tab.** Appears only on threads with an active swarm and opens automatically when a swarm starts (`autoOpenSwarmBoard`, on by default). Shows the swarm title, optional coordinator `plan.json` overview, clickable member roster with per-worker models and status, sort toggle, and Markdown posts with `brief`, `done`, and `blocked` badges.
 - **Swarm composer pill.** Shows `<title> · N active · M posts` above the composer so you can reopen the Swarm tab in one click.
 - **Readable swarm timeline cards.** Formats `swarm` (`title`, `add`, `kill`, `status`, `models`, `model`), `post_message`, `read_board`, and `swarm_wait` calls clearly.
-- **Works on local and remote hosts.** Reads `<appData>/brain/<conversationId>/.system_generated/swarm/` read-only over BB's host RPC without mutating `agy` files.
+- **Works on local and remote hosts.** The host reads `<appData>/brain/<conversationId>/.system_generated/swarm/` from the session's bound profile. Older bindings fall back to the host profile until the session opens or resumes.
 
 ### Thread forking and manual plus auto compaction
 
@@ -105,11 +105,11 @@ In the terminal CLI, `/swarm` prints a terminal-only `alt+s` hint. Inside BB, An
 ### Models, command safety, background tasks, and CLI updates
 
 - **Per-model reasoning and host-level model cache.** Discovers live models (`Gemini`, `Claude`, `GPT-OSS`) once per host (`models.scope: "host"`) and exposes each model's reasoning ladder (`low` through `max` where supported).
-- **Readable command cards and sandbox-escape guard.** Displays Antigravity's `toolSummary` as the command title, strips wrapper timestamps, extracts exit codes, flags out-of-sandbox calls with a destructive **Outside of sandbox** badge, and lets you auto-approve routine in-sandbox commands while still prompting on `BypassSandbox` escapes (`acceptEditsApproval`).
+- **Readable command cards and sandbox-escape guard.** Shows Antigravity's `toolSummary` as the title and displays command output once, with the exit code. The **Outside of sandbox** badge marks `BypassSandbox` calls. The `acceptEditsApproval` setting can auto-approve routine commands and keep the prompt for sandbox escapes.
 - **Live background banners and BB delegation.** Tracks backgrounded commands, timers, and subagents in BB's background task banner across restarts, with an optional `subagentsDisabled` toggle to delegate via visible BB child threads instead.
 - **User and workspace skills.** Indexes personal (`.gemini/antigravity-cli/skills`, `.gemini/skills`, `.gemini/config/skills`, `.agents/skills`) and workspace (`.agents/skills`, `.agent/skills`) skill roots in BB's picker while leaving CLI-internal prompts inside `agy`.
 - **Built-in CLI install, update checks, and sign-in health.** Detects missing `agy` or versions below `1.5.0`, verifies sign-in without spending tokens, guides signed-out setups to `agy acp --login`, checks for newer CLI releases in **Settings -> Updates**, and wires BB's **Install** and **Update** (`agy update`) actions.
-- **Isolated sessions and desktop reliability.** Passes `--process-per-session` automatically, fixes macOS BB Desktop Electron child spawns (`ELECTRON_RUN_AS_NODE=1`), and forwards `BB_ANTIGRAVITY_GEMINI_DIR`, `BB_ANTIGRAVITY_APP_DATA_DIR`, `BB_AGY_ACP_PROXY`, and `AGY_CLI_AUTO_COMPACT_OVERRIDE` (`agy 1.5.15+`).
+- **Isolated sessions and desktop reliability.** Passes `--process-per-session` and strips `ELECTRON_RUN_AS_NODE` from proxy-launched `agy` processes. BB retries prompts when the proxy reports that Antigravity's executor is still busy. The plugin forwards `BB_ANTIGRAVITY_GEMINI_DIR`, `BB_ANTIGRAVITY_APP_DATA_DIR`, `BB_AGY_ACP_PROXY`, and `AGY_CLI_AUTO_COMPACT_OVERRIDE` (`agy 1.5.15+`).
 
 ## Getting started
 
@@ -197,7 +197,7 @@ BB thread -> Antigravity Provider + host -> BB shared ACP bridge -> ACP proxy ->
                                          \-> Host RPC (readSwarmBoard) -> Swarm panel tab & composer pill
 ```
 
-The ACP proxy runs inside the plugin's own host module (`ELECTRON_RUN_AS_NODE=1` on Electron hosts). Set `BB_AGY_ACP_PROXY=0` in the host environment (`bb machine env`) to bypass the proxy for troubleshooting. Bypassing the proxy disables native system-prompt lifting, tip forking, and `/compact` failure detection while leaving ordinary ACP chat working.
+The ACP proxy runs inside the plugin's host module. It prunes stored instructions only for deleted conversations in the active app data directory. Set `BB_AGY_ACP_PROXY=0` in the host environment (`bb machine env`) to connect directly to `agy acp` for troubleshooting. The proxy provides native system prompts, tip forking, `/compact` failure detection, and busy-prompt retries.
 
 ### Local development checks
 
@@ -210,9 +210,11 @@ npm run check
 npm test
 npm run build
 npm run check:release
-npm run smoke -- --modes
+npm run smoke -- --modes --usage
 npm pack --dry-run --ignore-scripts
 ```
+
+CI runs the tests with an isolated home and checks that they never create `.bb` there. The release check runs the pinned SDK validators against the provider declaration and settings. The live `--usage` smoke check requires a signed-in `agy` and verifies the CLI version and at least one quota window.
 
 </details>
 

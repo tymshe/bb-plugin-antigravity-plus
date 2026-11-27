@@ -4,11 +4,23 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { experimental_execHostFile } from '@get-bb/plugin-sdk/process';
+import { providerUsageResultSchema } from '@get-bb/plugin-sdk/provider-bridge';
+import { parseAgyVersion } from '../acp-proxy.ts';
 import { resolveAntigravityCommand } from '../cli.ts';
+import { readAntigravityProviderUsage } from '../usage.ts';
 import manifest from '../package.json' with { type: 'json' };
 
 const command = resolveAntigravityCommand('agy');
 if (!command) throw new Error('Antigravity CLI was not found on this host.');
+if (process.argv.includes('--usage')) {
+  const { stdout, stderr } = await experimental_execHostFile(command, ['--version'], { timeout: 10_000 });
+  assert.ok(parseAgyVersion(stdout + '\n' + stderr), 'Could not parse agy --version.');
+  const { usage } = providerUsageResultSchema.parse(await readAntigravityProviderUsage({ command }));
+  assert.equal(usage?.status, 'ok', 'Usage probe did not return quota windows.');
+  assert.ok(usage.windows.length > 0, 'Usage probe returned no quota windows.');
+  console.log('CLI version and quota windows passed.');
+}
 const cwd = await mkdtemp(join(tmpdir(), 'bb-antigravity-smoke-'));
 const child = spawn(command, ['acp', '--disable-telemetry'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
 const closed = new Promise(resolve => child.once('close', resolve));

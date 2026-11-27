@@ -15,6 +15,7 @@ const lockWait = new Int32Array(new SharedArrayBuffer(4));
 const bindingSchema = z.object({
   threadId: z.string().min(1),
   profileHash: z.string().regex(/^[0-9a-f]{64}$/),
+  appDataDir: z.string().min(1).optional(),
   sessionIds: z.array(z.string().min(1)),
 });
 const stateSchema = z.object({ version: z.literal(1), bindings: z.array(bindingSchema) });
@@ -92,14 +93,9 @@ function matchesProfile(bindings: Binding[], threadId: string, sessionId: string
     (binding.threadId !== threadId && (sessionId === undefined || !binding.sessionIds.includes(sessionId))));
 }
 
-function hashLaunchProfile(request: unknown): string {
-  const { geminiDir, appDataDir } = resolveAntigravityLaunchProfile(request);
-  return createHash("sha256").update(JSON.stringify([resolve(geminiDir), resolve(appDataDir)])).digest("hex");
-}
-
 /** Checks the profile before forwarding, and records the raw session identity when agy opens it. */
 export function createProfileBindings(path = defaultProfileBindingsPath()) {
-  const pending = new Map<RequestId, { threadId: string; sessionId?: string; hash: string }>();
+  const pending = new Map<RequestId, { threadId: string; sessionId?: string; hash: string; appDataDir: string }>();
 
   function handleRequest(request: unknown): ProfileBindingError | undefined {
     const parsed = requestSchema.safeParse(request);
@@ -131,11 +127,12 @@ export function createProfileBindings(path = defaultProfileBindingsPath()) {
 
     try {
       const bindings = readBindings(path);
-      const hash = hashLaunchProfile(request);
+      const { geminiDir, appDataDir } = resolveAntigravityLaunchProfile(request);
+      const hash = createHash("sha256").update(JSON.stringify([resolve(geminiDir), resolve(appDataDir)])).digest("hex");
       const sessionId = method === "thread/fork" ? sourceProviderThreadId : providerThreadId;
       if (!matchesProfile(bindings, threadId, sessionId, hash)) return { id, message: MISMATCH };
       if (method !== "turn/start") {
-        pending.set(id, { threadId, sessionId, hash });
+        pending.set(id, { threadId, sessionId, hash, appDataDir: resolve(appDataDir) });
       }
     } catch {
       return { id, message: STATE_ERROR };
@@ -148,7 +145,7 @@ export function createProfileBindings(path = defaultProfileBindingsPath()) {
       pending.delete(message.id);
       const sessionId = message.result?.providerThreadId;
       if (typeof sessionId !== "string" || !sessionId) return false;
-      const { threadId, hash } = opening;
+      const { threadId, hash, appDataDir } = opening;
       let error: string | undefined;
       try {
         updateBindings(path, bindings => {
@@ -158,11 +155,13 @@ export function createProfileBindings(path = defaultProfileBindingsPath()) {
           }
           const previous = bindings.find(binding => binding.threadId === threadId);
           if (!previous) {
-            bindings.push({ threadId, profileHash: hash, sessionIds: [sessionId] });
+            bindings.push({ threadId, profileHash: hash, appDataDir, sessionIds: [sessionId] });
             return true;
           }
-          if (previous.sessionIds.includes(sessionId)) return false;
-          previous.sessionIds.push(sessionId);
+          const hasSession = previous.sessionIds.includes(sessionId);
+          if (hasSession && previous.appDataDir === appDataDir) return false;
+          if (!hasSession) previous.sessionIds.push(sessionId);
+          previous.appDataDir = appDataDir;
           return true;
         });
       } catch {
@@ -195,5 +194,13 @@ export function createProfileBindings(path = defaultProfileBindingsPath()) {
     return false;
   }
 
-  return { handleRequest, processStdoutMessage };
+  function getAppDataDir(providerThreadId: string): string | undefined {
+    try {
+      return readBindings(path).find(binding => binding.appDataDir && binding.sessionIds.includes(providerThreadId))?.appDataDir;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return { handleRequest, processStdoutMessage, getAppDataDir };
 }

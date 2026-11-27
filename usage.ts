@@ -198,7 +198,7 @@ export async function readAntigravityProviderUsage(options?: {
   command?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  execFile?: typeof experimental_execHostFile;
+  execFile?: (...args: Parameters<typeof experimental_execHostFile>) => Promise<Awaited<ReturnType<typeof experimental_execHostFile>>>;
   resolveCommand?: (command: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => string | null;
 }): Promise<ProviderUsageResult> {
   const command = options?.command ?? "agy";
@@ -342,13 +342,6 @@ export function registerAntigravityUsageSource(bb: BbPluginApi) {
 
   const loadResource = async (resourceId: string, refresh: boolean): Promise<CachedObservation> => {
     const [hostId, providerId] = resourceIdTupleSchema.parse(JSON.parse(resourceId));
-    const host = await bb.sdk.hosts.get({ hostId }).catch((error: unknown) => {
-      if (error instanceof Error && "status" in error && error.status === 404) {
-        cache.delete(resourceId);
-        throw new Error("Usage resource no longer exists.");
-      }
-      throw error;
-    });
     const previous = cache.get(resourceId);
     const unavailable = (message: string): CachedObservation =>
       getResourceOutputSchema.parse({
@@ -362,11 +355,23 @@ export function registerAntigravityUsageSource(bb: BbPluginApi) {
         },
       });
 
-    if (host.status === "disconnected") {
-      return unavailable("Machine is disconnected.");
+    try {
+      const host = await bb.sdk.hosts.get({ hostId });
+      if (host.status === "disconnected") return unavailable("Machine is disconnected.");
+    } catch (error) {
+      if (error instanceof Error && "status" in error && error.status === 404) {
+        cache.delete(resourceId);
+        throw new Error("Usage resource no longer exists.");
+      }
+      return unavailable("Usage could not be collected from this machine.");
     }
 
-    const providers = await bb.sdk.providers.list({ hostId, capability: "usage" });
+    let providers;
+    try {
+      providers = await bb.sdk.providers.list({ hostId, capability: "usage" });
+    } catch {
+      return unavailable("Usage could not be collected from this machine.");
+    }
     if (!providers.some(p => p.id === providerId && p.pluginId === (bb.pluginId ?? PLUGIN_ID) && p.id === PROVIDER_ID)) {
       cache.delete(resourceId);
       throw new Error("Usage resource no longer exists.");

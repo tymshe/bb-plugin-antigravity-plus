@@ -64,7 +64,10 @@ export function createSubagentController(options: { replyToBridge?: (line: strin
   }
   function isSubagentApprovalForDisabledThread(message: unknown): boolean {
     const m = record(message), params = record(m?.params), payload = record(params?.payload), subject = record(payload?.subject);
-    return m?.jsonrpc === "2.0" && m.method === "interaction/request" && (typeof m.id === "string" || typeof m.id === "number") && typeof params?.threadId === "string" && isSubagentsDisabled(params.threadId) && payload?.kind === "approval" && subject?.kind === "tool_use" && (isNativeSubagentTool(subject.tool) || isNativeSubagentTool(subject.presentation?.title) || isNativeSubagentTool(subject.presentation?.label?.pending)) && Array.isArray(payload.availableDecisions);
+    const tool = typeof subject?.tool === "string" ? subject.tool.trim().toLowerCase() : "";
+    const native = tool ? ANTIGRAVITY_SUBAGENT_TOOLS.has(tool) :
+      isNativeSubagentTool(subject?.presentation?.title) || isNativeSubagentTool(subject?.presentation?.label?.pending);
+    return m?.jsonrpc === "2.0" && m.method === "interaction/request" && (typeof m.id === "string" || typeof m.id === "number") && typeof params?.threadId === "string" && isSubagentsDisabled(params.threadId) && payload?.kind === "approval" && subject?.kind === "tool_use" && native && Array.isArray(payload.availableDecisions);
   }
   function isBlockedSubagentApproval(message: unknown): boolean {
     return isSubagentApprovalForDisabledThread(message) && record(record(record(message)?.params)?.payload)!.availableDecisions.includes("deny");
