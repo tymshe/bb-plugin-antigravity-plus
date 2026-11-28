@@ -122,8 +122,11 @@ if (entry.icon?.url !== expectedIconUrl) {
 }
 
 // 4. Marketplace overview, manifest metadata & description contract
-if (overview.length > 4000) {
-  fail(`PLUGIN_OVERVIEW.md is ${overview.length} chars (marketplace max is 4000)`);
+if (overview.length > 2800) {
+  fail(`PLUGIN_OVERVIEW.md is ${overview.length} chars (keep <= 2800 per bb-plugin-authoring; hard marketplace max is 4000)`);
+}
+if (/^#{1,2} /.test(overview.trimStart())) {
+  fail("PLUGIN_OVERVIEW.md must lead with an outcome paragraph, not a '#' or '##' heading (BB renders '##' as a small uppercase section label)");
 }
 if (/^# /m.test(overview)) {
   fail("PLUGIN_OVERVIEW.md must not contain a level-1 '# ' heading");

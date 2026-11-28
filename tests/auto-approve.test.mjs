@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { closeAssistantBeforeReasoning, rememberApprovalSetting, interceptApproval, recordSandboxEscapeToolCall } from '../host.ts';
+import { closeOpenAssistantStream, rememberApprovalSetting, interceptApproval, recordSandboxEscapeToolCall } from '../host.ts';
 import { rememberSubagentSetting } from '../subagents.ts';
 
 const options = (autoApprove, permissionEscalation = 'ask', extraProviderOptions = {}) => ({
@@ -121,19 +121,39 @@ const assistantClose = { kind: 'item.textClose', key: { channel: 'assistant' }, 
 
 test('closes the assistant stream once before reasoning across stdout batches', () => {
   const open = new Set();
-  closeAssistantBeforeReasoning('a', [assistant], open);
-  assert.deepEqual(closeAssistantBeforeReasoning('b', [thought], open), [thought]);
+  closeOpenAssistantStream('a', [assistant], open);
+  assert.deepEqual(closeOpenAssistantStream('b', [thought], open), [thought]);
   assert.deepEqual(
-    closeAssistantBeforeReasoning('a', [thought, thought, assistant, summary], open),
-    [assistantClose, thought, thought, assistant, assistantClose, summary],
+    closeOpenAssistantStream('a', [{ kind: 'usage' }, thought, thought, assistant, summary], open),
+    [{ kind: 'usage' }, assistantClose, thought, thought, assistant, assistantClose, summary],
   );
 });
 
 test('keeps SDK-emitted closes and stream boundaries without duplicates', () => {
   const open = new Set();
-  for (const close of [assistantClose, { kind: 'turn.boundary' }, { kind: 'session.reset' }]) {
-    closeAssistantBeforeReasoning('a', [assistant], open);
+  const accepted = { kind: 'input.accepted', clientRequestId: 'creq_1' };
+  for (const close of [assistantClose, { kind: 'turn.boundary' }, { kind: 'session.reset' }, { kind: 'session.ended' }]) {
+    closeOpenAssistantStream('a', [assistant], open);
     const batch = [close, thought, summary];
-    assert.equal(closeAssistantBeforeReasoning('a', batch, open), batch);
+    assert.equal(closeOpenAssistantStream('a', batch, open), batch);
+    closeOpenAssistantStream('a', [assistant], open);
+    const steerBatch = [close, accepted];
+    assert.equal(closeOpenAssistantStream('a', steerBatch, open), steerBatch);
   }
+});
+
+test('closes an open assistant stream once before steered or new-turn boundaries', () => {
+  const open = new Set();
+  const accepted = { kind: 'input.accepted', clientRequestId: 'creq_steer' };
+  const reply = { kind: 'item.textDelta', channel: 'agentMessage', text: 'after steer' };
+  // Initial input.accepted with no open stream passes through unchanged
+  assert.equal(closeOpenAssistantStream('a', [accepted], open).length, 1);
+  // Mid-stream steer closes the open assistant message before input.accepted
+  closeOpenAssistantStream('a', [assistant], open);
+  assert.deepEqual(closeOpenAssistantStream('a', [accepted], open), [assistantClose, accepted]);
+  // Subsequent reasoning after steer does not emit a duplicate close
+  assert.deepEqual(closeOpenAssistantStream('a', [thought, reply], open), [thought, reply]);
+  // Direct reply without reasoning reopens cleanly and closes on input.provider or turn.open
+  assert.deepEqual(closeOpenAssistantStream('a', [{ kind: 'input.provider' }, reply], open), [assistantClose, { kind: 'input.provider' }, reply]);
+  assert.deepEqual(closeOpenAssistantStream('a', [{ kind: 'turn.open' }], open), [assistantClose, { kind: 'turn.open' }]);
 });

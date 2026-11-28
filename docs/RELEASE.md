@@ -14,7 +14,7 @@ This document defines the repeatable validation, release, and marketplace update
      - The SDK's `validatePluginProviderDeclaration` and `registerSettingDescriptors` accept the runtime provider declaration and settings.
      - Runtime setting keys in `server.ts` match `README.md`, `SECURITY.md`, and `skills/antigravity-plus/SKILL.md`, with no retired setting names left behind.
      - Display name, provider ID, version (`package.json` and `scripts/smoke.mjs`), repository URL, `LICENSE` author, `bb.description`, `keywords`, `bbMarketplace` (`category`, `secondaryCategories`, `screenshots`), and `assets/icon.svg` SHA-256 hash are valid and match `docs/marketplace-entry.template.json`.
-     - `PLUGIN_OVERVIEW.md` stays at or under 4,000 characters, has no `# ` H1 title, no raw HTML, no tables, no images, HTTPS links only, zero em dashes, and zero banned marketplace buzzwords.
+     - `PLUGIN_OVERVIEW.md` leads with an outcome paragraph (no leading `#`/`##` heading), stays at or under 2,800 characters (hard marketplace max 4,000), has no `# ` H1 title, no raw HTML, no tables, no images, HTTPS links only, zero em dashes, and zero banned marketplace buzzwords. `package.json` `bb.description` stays at or under 140 characters.
      - Every screenshot in `package.json` `bbMarketplace.screenshots` exists in `assets/screenshots/`, is embedded in `README.md`, is at most 2 MiB, and is at least 1200 px wide (with no unreferenced leftover screenshots).
      - Zero local home paths (`/Users/...`, `/home/...`), personal email addresses, or stale upstream references in tracked files.
      - `npm pack --dry-run --ignore-scripts` contains all required entrypoints and excludes `.map`, `.env`, and scratch files.
@@ -71,13 +71,13 @@ Run these steps locally on a machine with BB and a signed-in `agy` CLI:
 
 `antigravity-plus` is self-published through the automated [get-bb/marketplace](https://github.com/get-bb/marketplace) crawler because this repository is public, is not a GitHub fork, and carries the `bb-plugin` GitHub topic and `package.json` keyword.
 
-When you push a new semver tag (`vX.Y.Z`), the marketplace crawler reads the new tag within about 30 minutes and updates the live listing automatically from this repository:
+When you push a new semver tag (`vX.Y.Z`), the marketplace crawler reads the new tag within about 30 minutes and verifies it in `index/v1/report.json`:
 
 - `package.json` `bb.name` -> display name
-- `package.json` `bb.description` -> card description
+- `package.json` `bb.description` -> card description (`<= 140` chars)
 - `package.json` `bb.branding.icon` -> icon (`<= 256 KiB`)
 - `package.json` `keywords` -> search tags (up to 10 kebab-case tags after `bb-plugin` is stripped)
 - `package.json` `bbMarketplace` (`category`, `secondaryCategories`, `screenshots`) -> categories and screenshot gallery (first entry is the hero image; any unknown key or invalid screenshot skips the release update)
-- `PLUGIN_OVERVIEW.md` -> long-form listing overview (`<= 4000` chars)
+- `PLUGIN_OVERVIEW.md` -> long-form listing overview (`<= 2800` chars locally, hard marketplace max `4000`)
 
-No pull request to `get-bb/marketplace` is needed for normal releases, copy updates, or screenshot refreshes. Recheck `scripts/crawl-lib.mjs` on [get-bb/marketplace](https://github.com/get-bb/marketplace) before changing `bbMarketplace` keys or category IDs. Open a PR to `get-bb/marketplace` only if you ever need to change legacy-only metadata outside the self-published contract. Keep `docs/marketplace-entry.template.json` synced as a checked reference snapshot.
+While `get-bb/marketplace` runs with `CRAWL_MODE=shadow`, crawled metadata publishes to `index/shadow/marketplace.json` while live BB Desktop listings read legacy `entries/antigravity-plus.json`. Existing installs still receive new `^0.2.0` tags immediately, and updating live store copy or screenshots while shadow mode is active requires a PR to `get-bb/marketplace` (with the `v1-change` label if `description` changes). Once `get-bb/marketplace` switches to `CRAWL_MODE=live`, no marketplace PR is needed. Keep `docs/marketplace-entry.template.json` synced as a checked reference snapshot.

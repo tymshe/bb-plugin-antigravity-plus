@@ -12,6 +12,7 @@ const sessionId = bridgeTest ? '9a6a33d2-0afa-4caa-9e67-30de71f632d5' : 'rec-ses
 const appDataDir = resolveAgyAppDataDir(process.argv.slice(2));
 let stepIndex = 0;
 let prompts = 0;
+let pendingSteerPromptId = null;
 if (bridgeTest) appendFileSync(process.env.AGY_TEST_SPAWNS, appDataDir + '\n');
 
 createInterface({ input: process.stdin }).on('line', line => {
@@ -23,7 +24,27 @@ createInterface({ input: process.stdin }).on('line', line => {
   } });
   if (m.method === 'session/new') send({ jsonrpc: '2.0', id: m.id, result: { sessionId } });
   if (['session/resume', 'session/load', 'session/close'].includes(m.method)) send({ jsonrpc: '2.0', id: m.id, result: {} });
+  if (m.method === 'session/cancel' && pendingSteerPromptId !== null) {
+    const id = pendingSteerPromptId;
+    pendingSteerPromptId = null;
+    send({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+    return;
+  }
   if (m.method === 'session/prompt') {
+    if (process.env.AGY_TEST_STEER_STREAM === '1') {
+      if (++prompts === 1) {
+        pendingSteerPromptId = m.id;
+        send({ jsonrpc: '2.0', method: 'session/update', params: {
+          sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'half written reply' } },
+        } });
+      } else {
+        send({ jsonrpc: '2.0', method: 'session/update', params: {
+          sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'fresh reply after steer' } },
+        } });
+        send({ jsonrpc: '2.0', id: m.id, result: { stopReason: 'end_turn' } });
+      }
+      return;
+    }
     if (process.env.AGY_TEST_BUSY_ONCE === '1') {
       if (++prompts === 1) {
         send({ jsonrpc: '2.0', id: m.id, error: {

@@ -377,22 +377,27 @@ const assistantTextClose = {
   channel: "agentMessage",
 } as const;
 
-// SDK 0.6.157 does not close the assistant stream when thought starts.
-export function closeAssistantBeforeReasoning<Delta extends { kind?: string; channel?: string }>(
+const STREAM_RESET_KINDS = new Set(["turn.boundary", "session.reset", "session.ended"]);
+const STREAM_INTERRUPTING_KINDS = new Set(["input.accepted", "input.provider", "turn.open"]);
+
+// SDK 0.6.157 leaves an open agentMessage stream unclosed when another text
+// channel starts or a steered/new input begins mid-stream.
+export function closeOpenAssistantStream<Delta extends { kind?: string; channel?: string }>(
   threadId: string,
   deltas: readonly Delta[],
   openStreams: Set<string>,
 ): readonly (Delta | typeof assistantTextClose)[] {
   let ordered: (Delta | typeof assistantTextClose)[] | undefined;
   for (const [index, delta] of deltas.entries()) {
-    if (delta?.kind === "turn.boundary" || delta?.kind === "session.reset") {
+    const kind = delta?.kind;
+    if (typeof kind === "string" && STREAM_RESET_KINDS.has(kind)) {
       openStreams.delete(threadId);
     } else if (delta?.channel === "agentMessage") {
-      if (delta.kind === "item.textDelta") openStreams.add(threadId);
-      if (delta.kind === "item.textClose") openStreams.delete(threadId);
+      if (kind === "item.textDelta") openStreams.add(threadId);
+      if (kind === "item.textClose") openStreams.delete(threadId);
     } else if (
-      delta?.kind === "item.textDelta" &&
-      (delta.channel === "reasoningText" || delta.channel === "reasoningSummary") &&
+      ((typeof kind === "string" && STREAM_INTERRUPTING_KINDS.has(kind)) ||
+        (kind === "item.textDelta" && typeof delta.channel === "string" && delta.channel !== "agentMessage")) &&
       openStreams.delete(threadId)
     ) {
       ordered ??= deltas.slice(0, index);
@@ -419,7 +424,7 @@ function processBridgeOutputLine(line: string): string[] {
   const params = message?.params;
   if (message?.method === "thread/delta" && typeof params?.threadId === "string" && Array.isArray(params.deltas)) {
     tasksChanged = getBackgroundTaskTracker().processStdoutMessage(message);
-    const ordered = closeAssistantBeforeReasoning(params.threadId, params.deltas, openAssistantStreams);
+    const ordered = closeOpenAssistantStream(params.threadId, params.deltas, openAssistantStreams);
     streamChanged = ordered !== params.deltas;
     if (streamChanged) params.deltas = ordered;
   }

@@ -146,6 +146,34 @@ test('the shared bridge retries an agy executor busy response and completes the 
   });
 });
 
+test('mid-stream turn/steer closes the interrupted assistant stream before input.accepted', { skip: process.platform === 'win32' }, async t => {
+  const { root, env } = setup(t);
+  const params = sessionParams(root);
+  await withHost({ ...env, AGY_TEST_STEER_STREAM: '1' }, async ({ call, messages, waitFor }) => {
+    const { result } = await call('thread/start', params);
+    assert.ok(result?.providerThreadId);
+    assert.ok((await call('turn/start', {
+      ...params, providerThreadId: result.providerThreadId, clientRequestId: 'creq_56789abcde',
+      input: [{ type: 'text', text: 'start streaming' }],
+    })).result);
+    await waitFor(message => message.params?.deltas?.some(
+      delta => delta.kind === 'item.textDelta' && delta.channel === 'agentMessage' && delta.text === 'half written reply',
+    ));
+    assert.ok((await call('turn/steer', {
+      ...params, providerThreadId: result.providerThreadId, expectedTurnId: 'turn-1', clientRequestId: 'creq_6789abcdef',
+      input: [{ type: 'text', text: 'new update' }],
+    })).result);
+    await waitFor(message => message.params?.deltas?.some(delta => delta.kind === 'turn.boundary'));
+    const deltas = messages.flatMap(message => message.params?.deltas ?? []);
+    const firstIdx = deltas.findIndex(d => d.kind === 'item.textDelta' && d.text === 'half written reply');
+    const closeIdx = deltas.findIndex((d, i) => i > firstIdx && d.kind === 'item.textClose' && d.channel === 'agentMessage');
+    const acceptIdx = deltas.findIndex(d => d.kind === 'input.accepted' && d.clientRequestId === 'creq_6789abcdef');
+    const secondIdx = deltas.findIndex(d => d.kind === 'item.textDelta' && d.text === 'fresh reply after steer');
+    assert.ok(firstIdx >= 0 && closeIdx > firstIdx && acceptIdx > closeIdx && secondIdx > acceptIdx,
+      `Expected first < close < input.accepted < second, got ${JSON.stringify({ firstIdx, closeIdx, acceptIdx, secondIdx })}`);
+  });
+});
+
 test('the Swarm host handler reads the bound session profile after a legacy binding is resumed', { skip: process.platform === 'win32' }, async t => {
   const { root, env, stateDir } = setup(t);
   const appDataDir = join(root, 'bound-app-data');
